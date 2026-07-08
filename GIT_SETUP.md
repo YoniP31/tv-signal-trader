@@ -129,5 +129,5 @@ If you're unsure, stop and ask rather than force-pushing or discarding changes.
 
 - Don't `git push --force` on shared branches (like `main`) — it can overwrite teammates' work.
 - Don't commit secrets, API keys, or credentials.
-- Don't commit generated/local files — check [.gitignore](.gitignore) and add patterns for anything new that shouldn't be tracked (e.g. `chromedriver`, browser profile folders, screenshots).
+- Don't commit generated/local files — check [.gitignore](.gitignore) and add patterns for anything new that shouldn't be tracked (e.g. `drivers/chromedriver`, browser profile folders, screenshots).
 - Run `git status` before any destructive command (`git checkout --`, `git reset --hard`, `git clean`) — these can discard uncommitted work.

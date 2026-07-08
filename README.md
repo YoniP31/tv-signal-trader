@@ -4,19 +4,30 @@ Selenium-based bot that drives the TradingView web UI to place trades (Market or
 
 ## What the code currently does
 
-The whole implementation lives in [trade_btc.py](trade_btc.py). There's no packaging/CLI yet — it's a single script you run interactively.
+The implementation lives in the [tv_signal_trader/](tv_signal_trader/) package, entered via [main.py](main.py):
+
+| File | Responsibility |
+|------|----------------|
+| [main.py](main.py) | Entry point — `python main.py` |
+| [tv_signal_trader/config.py](tv_signal_trader/config.py) | Paths, URLs, and other constants |
+| [tv_signal_trader/browser.py](tv_signal_trader/browser.py) | Chrome/chromedriver setup and stealth tweaks |
+| [tv_signal_trader/humanize.py](tv_signal_trader/humanize.py) | Randomized pauses and human-like typing |
+| [tv_signal_trader/panel.py](tv_signal_trader/panel.py) | Low-level DOM helpers for reading/filling the order-ticket panel |
+| [tv_signal_trader/trading.py](tv_signal_trader/trading.py) | `place_order()` — the core trading action |
+| [tv_signal_trader/signal_source.py](tv_signal_trader/signal_source.py) | `trade_from_website()` — reads a signal and triggers a trade |
+| [tv_signal_trader/cli.py](tv_signal_trader/cli.py) | Interactive command loop |
 
 ### 1. Browser setup
 
-On startup the script:
+On startup ([tv_signal_trader/browser.py](tv_signal_trader/browser.py)):
 
-- Launches Chrome via `chromedriver` with a persistent profile folder (`tv_profile` in the user's home directory), so you only need to log into TradingView once.
+- Launches Chrome via `chromedriver` with a persistent profile folder (`tv_profile` in the user's home directory, resolved with `os.path.expanduser("~")`), so you only need to log into TradingView once.
 - Applies a few anti-bot-detection tweaks (custom user-agent, hides `navigator.webdriver`, fakes `navigator.plugins`/`navigator.languages`) so TradingView is less likely to flag the session as automated.
 - Opens `https://www.tradingview.com/chart/?symbol=BINANCE:BTCUSD`.
 
-**Note:** as written, the script assumes Windows (`chromedriver.exe`, `USERPROFILE` env var). To run on macOS/Linux you'd need to point `driver_path` at a plain `chromedriver` binary and swap the profile-dir logic to use `HOME` instead of `USERPROFILE`.
+The `chromedriver` binary is expected at `drivers/chromedriver` (or `drivers/chromedriver.exe` on Windows) — `browser.get_chromedriver_path()` picks the right filename for the current OS automatically via `platform.system()`, so the same code runs unmodified on Windows/macOS/Linux.
 
-### 2. Order placement — `place_order(tp_dollars, sl_dollars, side, units)`
+### 2. Order placement — `place_order(driver, tp_dollars, sl_dollars, side, units)`
 
 This is the core trading action. It drives TradingView's order panel (the right-hand sidebar) by locating elements via coordinates/DOM text rather than fixed selectors, since TradingView doesn't expose stable IDs for these controls:
 
@@ -29,7 +40,7 @@ This is the core trading action. It drives TradingView's order panel (the right-
 
 All typing is done character-by-character with randomized delays (`type_humanlike`), and most steps have randomized pauses between them, to look more like a human user than a script.
 
-### 3. Reading a signal — `trade_from_website()`
+### 3. Reading a signal — `trade_from_website(driver)`
 
 This function currently points at a placeholder test site (`https://white-martynne-45.tiiny.site/`), not a real signal provider:
 
@@ -61,11 +72,11 @@ Running the script drops you into a `>` prompt that accepts:
    pip install -r requirements.txt
    ```
 
-3. Download the `chromedriver` build matching your installed Chrome version and place it next to `trade_btc.py` (as `chromedriver.exe` on Windows, per the current script — adjust `driver_path` if you're on macOS/Linux).
+3. Download the `chromedriver` build matching your installed Chrome version and place it in [drivers/](drivers/) — as `drivers/chromedriver` on macOS/Linux, or `drivers/chromedriver.exe` on Windows. The correct filename for your OS is picked automatically.
 4. Run the script:
 
    ```bash
-   python trade_btc.py
+   python main.py
    ```
 
 5. On first run, Chrome opens to the TradingView chart — log into TradingView (and make sure the intended Tradovate/broker connection is active) in that window. The session persists in the `tv_profile` folder for future runs.
@@ -74,7 +85,6 @@ Running the script drops you into a `>` prompt that accepts:
 ## Known limitations / things to watch out for
 
 - **UI-automation is brittle**: element lookup relies on screen coordinates (e.g. "anything right of x=1050 is the order panel") and label text matching. Any TradingView layout change, browser zoom level, or window-size change can break it.
-- **Windows-specific paths**: `chromedriver.exe` and `USERPROFILE` assumptions need generalizing for cross-platform use.
 - **Minimal error handling**: most failures just print a warning and move on rather than retrying or raising — check the console output after each command.
 - **Places real orders**: `place_order()` clicks the live Buy/Sell confirm button. Test against a paper/demo Tradovate connection before pointing this at a live account.
 - Some inline comments in the source are mangled/garbled (an encoding issue from how the file was passed along) — cosmetic only, doesn't affect behavior.

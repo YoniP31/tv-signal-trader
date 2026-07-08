@@ -1,6 +1,6 @@
 # Chrome / Selenium
-chromedriver
-chromedriver.exe
+drivers/chromedriver
+drivers/chromedriver.exe
 tv_profile/
 *.profile/
 
