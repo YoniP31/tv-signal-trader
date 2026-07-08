@@ -1,0 +1,24 @@
+# Chrome / Selenium
+chromedriver
+chromedriver.exe
+tv_profile/
+*.profile/
+
+# Screenshots produced by the bot at runtime
+*.png
+!docs/**/*.png
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# Secrets / local config
+.env
+*.env.local
+
+# OS cruft
+.DS_Store
+Thumbs.db
