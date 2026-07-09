@@ -8,6 +8,9 @@ tv_profile/
 *.png
 !docs/**/*.png
 
+# Generated runtime status file
+status.json
+
 # Python
 __pycache__/
 *.pyc

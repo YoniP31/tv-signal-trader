@@ -73,14 +73,15 @@ Running the script drops you into a `>` prompt that accepts:
    ```
 
 3. Download the `chromedriver` build matching your installed Chrome version and place it in [drivers/](drivers/) — as `drivers/chromedriver` on macOS/Linux, or `drivers/chromedriver.exe` on Windows. The correct filename for your OS is picked automatically.
-4. Run the script:
+4. (Optional) Copy [.env.example](.env.example) to `.env` and fill in your TradingGenerator username/password. This is only used as a fallback — [tv_signal_trader/login.py](tv_signal_trader/login.py) auto-fills it if `trade_from_website()` finds a login form on the signal site (e.g. no session cookie yet). Both TradingView and the signal site otherwise stay logged in via the persistent Chrome profile once you've signed in there manually once.
+5. Run the script:
 
    ```bash
    python main.py
    ```
 
-5. On first run, Chrome opens to the TradingView chart — log into TradingView (and make sure the intended Tradovate/broker connection is active) in that window. The session persists in the `tv_profile` folder for future runs.
-6. Type a command at the `>` prompt (see table above).
+6. On first run, Chrome opens to the TradingView chart — log into TradingView (and make sure the intended Tradovate/broker connection is active) in that window. The session persists in the `tv_profile` folder for future runs.
+7. Type a command at the `>` prompt (see table above).
 
 ## Known limitations / things to watch out for
 

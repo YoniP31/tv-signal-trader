@@ -4,6 +4,9 @@ from selenium.webdriver.common.by import By
 
 from . import config
 from . import humanize
+from . import login
+from . import state
+from . import status
 from . import trading
 
 
@@ -18,8 +21,17 @@ def trade_from_website(driver):
         all_tabs = driver.window_handles
         web_tab = all_tabs[-1]
         driver.switch_to.window(web_tab)
+        state.session.web_tab = web_tab
         print("  Website tab opened ✓")
         humanize.long_pause(2, 3)
+
+        tg_logged_in = login.ensure_tradinggenerator_login(driver)
+        status.update(tradinggenerator_logged_in=tg_logged_in)
+        if not tg_logged_in:
+            print("  ❌ TradingGenerator login failed — aborting.")
+            driver.switch_to.window(tv_tab)
+            return
+        humanize.long_pause(1, 2)
 
         print("  Looking for button...")
         clicked = False
