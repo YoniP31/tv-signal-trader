@@ -8,9 +8,15 @@ from selenium.webdriver.chrome.service import Service
 from . import config
 
 
-def get_chromedriver_path():
+def default_chromedriver_guess():
+    """Where chromedriver would traditionally live, used only to pre-fill the
+    setup prompt if nothing's been configured yet."""
     filename = "chromedriver.exe" if platform.system() == "Windows" else "chromedriver"
     return os.path.join(config.DRIVERS_DIR, filename)
+
+
+def get_chromedriver_path():
+    return config.CHROMEDRIVER_PATH
 
 
 def build_options():
