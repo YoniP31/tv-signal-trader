@@ -1,18 +1,26 @@
 import threading
 
 from . import config
-from . import login
 from . import state
 from . import status
 
 
 class LoginMonitor:
-    """Background thread that periodically re-checks login state so status.json
-    stays current even while the app just sits idle at the '>' prompt (e.g. the
-    user logs in manually mid-session, with no command to trigger a check).
+    """Background thread that periodically re-checks TradingView login state
+    so status.json stays current even while the app just sits idle at the
+    '>' prompt (e.g. the user logs in manually mid-session, with no command
+    to trigger a check).
+
+    Only checks TradingView, via a cookie read that doesn't require
+    switching tabs (see status.check_tradingview_logged_in) — there's no
+    equivalent non-disruptive check for TradingGenerator, since that one can
+    only be determined by reading its tab's rendered DOM, which would mean
+    visibly switching the browser to that tab every poll cycle. Its status
+    is instead only updated on-demand, whenever the 'web' command actually
+    uses it.
 
     Runs only while state.session.driver_lock is free, so it never interleaves
-    with a command in progress (tab-switching mid-trade would be dangerous).
+    with a command in progress.
     """
 
     def __init__(self, driver, interval=config.LOGIN_POLL_INTERVAL_SECONDS):
@@ -34,35 +42,6 @@ class LoginMonitor:
 
     def _poll_once(self):
         with state.session.driver_lock:
-            try:
-                original_tab = self.driver.current_window_handle
-                open_tabs = self.driver.window_handles
-            except Exception:
-                return
-
-            fields = {}
-
-            if state.session.tv_tab in open_tabs:
-                try:
-                    self.driver.switch_to.window(state.session.tv_tab)
-                    tv_logged_in = status.check_tradingview_logged_in(self.driver)
-                    if tv_logged_in is not None:
-                        fields["tradingview_logged_in"] = tv_logged_in
-                except Exception:
-                    pass
-
-            if state.session.web_tab and state.session.web_tab in open_tabs:
-                try:
-                    self.driver.switch_to.window(state.session.web_tab)
-                    fields["tradinggenerator_logged_in"] = not login.is_login_form_present(self.driver)
-                except Exception:
-                    pass
-
-            try:
-                if original_tab in self.driver.window_handles:
-                    self.driver.switch_to.window(original_tab)
-            except Exception:
-                pass
-
-            if fields:
-                status.update(**fields)
+            tv_logged_in = status.check_tradingview_logged_in(self.driver)
+            if tv_logged_in is not None:
+                status.update(tradingview_logged_in=tv_logged_in)

@@ -46,14 +46,25 @@ def check_tradingview_logged_in(driver):
     TradingView renders essentially the same chart page whether you're logged
     in or not (only order placement actually differs), so a DOM/text check
     can't tell the two apart. The session cookie can: TradingView sets
-    `sessionid` on login. `driver.get_cookies()` reads it straight from the
-    browser's cookie jar rather than `document.cookie`, so it sees it even
-    though the cookie is httpOnly.
+    `sessionid` on login. Uses the Network.getAllCookies CDP command rather
+    than driver.get_cookies() so it works no matter which tab is currently
+    active — driver.get_cookies() only returns cookies for the current tab's
+    domain, which would require switching to the TradingView tab first (and
+    switching tabs via Selenium actually changes the frontmost tab in the
+    real browser window, visibly hijacking whatever the user is looking at).
+    Since Network.getAllCookies returns cookies for every domain, the
+    TradingView domain is checked explicitly to avoid matching some other
+    site's unrelated cookie that happens to also be named "sessionid".
     """
     try:
-        cookies = driver.get_cookies()
+        result = driver.execute_cdp_cmd("Network.getAllCookies", {})
         session_cookie = next(
-            (c for c in cookies if c.get("name") == TRADINGVIEW_SESSION_COOKIE), None
+            (
+                c for c in result.get("cookies", [])
+                if c.get("name") == TRADINGVIEW_SESSION_COOKIE
+                and "tradingview.com" in c.get("domain", "")
+            ),
+            None,
         )
         return bool(session_cookie and session_cookie.get("value"))
     except Exception:
