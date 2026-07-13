@@ -19,7 +19,7 @@ DRIVERS_DIR = os.path.join(APP_DIR, "drivers")
 
 PROFILE_DIR = os.path.join(os.path.expanduser("~"), "tv_profile")
 
-CHART_URL = "https://www.tradingview.com/chart/?symbol=BINANCE:BTCUSD"
+CHART_URL = "https://www.tradingview.com/chart/?symbol=MNQ1!"
 SIGNAL_SITE_URL = "https://tradinggenerator-english.tiiny.co/"
 
 USER_AGENT = (

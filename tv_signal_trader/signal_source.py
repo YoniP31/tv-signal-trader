@@ -5,13 +5,79 @@ from selenium.webdriver.common.by import By
 from . import config
 from . import humanize
 from . import login
-from . import state
 from . import status
 from . import trading
 
 
+def _extract_field(driver, label):
+    """Finds the TRADE PARAMETERS box whose text starts with `label` (e.g.
+    "ASSET\nNQ") and returns just the value part ("NQ").
+
+    Prefers the shortest such match: the same label can also show up inside
+    a larger ancestor container that concatenates multiple boxes' text, and
+    the smallest matching element is reliably the single label+value box
+    itself rather than one of those larger wrappers.
+    """
+    candidates = []
+    for el in driver.find_elements(By.XPATH, "//*[not(self::script) and not(self::style)]"):
+        try:
+            text = el.text.strip()
+        except Exception:
+            continue
+        if text.startswith(label) and text != label:
+            candidates.append(text)
+    if not candidates:
+        return None
+    shortest = min(candidates, key=len)
+    return shortest[len(label):].strip()
+
+
+def _extract_trade_parameters(driver):
+    """Reads the TRADE PARAMETERS box (asset/direction/contracts/SL/TP) from
+    the currently open TradingGenerator tab."""
+    asset = _extract_field(driver, "ASSET")
+    direction = _extract_field(driver, "DIRECTION")
+    contracts_raw = _extract_field(driver, "CONTRACTS") or ""
+    sl_raw = _extract_field(driver, "STOP LOSS") or ""
+    tp_raw = _extract_field(driver, "TAKE PROFIT") or ""
+
+    contracts_match = re.search(r'\d+', contracts_raw)
+    sl_match = re.search(r'(\d+)\s*ticks', sl_raw, re.IGNORECASE)
+    tp_match = re.search(r'(\d+)\s*ticks', tp_raw, re.IGNORECASE)
+
+    return {
+        'asset': asset,
+        'direction': direction.upper() if direction else None,
+        'contracts': int(contracts_match.group()) if contracts_match else None,
+        'contract_size': re.sub(r'[\d\s]', '', contracts_raw) or None,
+        'sl_ticks': int(sl_match.group(1)) if sl_match else None,
+        'tp_ticks': int(tp_match.group(1)) if tp_match else None,
+    }
+
+
+def _resolve_tv_symbol(asset, contract_size):
+    """Maps a TradingGenerator asset/size to a TradingView continuous-futures
+    ticker, e.g. ("NQ", "MINI") -> "MNQ1!". "1!" is TradingView's standard
+    suffix for the continuous front-month contract of a futures symbol.
+    """
+    ticker = f"M{asset}" if (contract_size or '').upper() == 'MINI' else asset
+    return f"{ticker}1!"
+
+
+def load_chart_for_signal(driver, asset, contract_size):
+    """Switches the current tab's chart to the symbol implied by asset/contract_size."""
+    symbol = _resolve_tv_symbol(asset, contract_size)
+    url = f"https://www.tradingview.com/chart/?symbol={symbol}"
+    print(f"  Switching chart to {symbol}...")
+    driver.get(url)
+    humanize.long_pause(5, 8)
+    print(f"  Chart loaded: {driver.title}")
+    return symbol
+
+
 def trade_from_website(driver):
-    """Opens the placeholder signal site in a new tab, reads the signal, and executes the trade."""
+    """Opens TradingGenerator in a new tab, generates and reads a trade signal,
+    switches the chart to the implied symbol, and executes the trade."""
     print("\n[WEB] Opening website...")
     tv_tab = driver.current_window_handle
     try:
@@ -21,7 +87,6 @@ def trade_from_website(driver):
         all_tabs = driver.window_handles
         web_tab = all_tabs[-1]
         driver.switch_to.window(web_tab)
-        state.session.web_tab = web_tab
         print("  Website tab opened [OK]")
         humanize.long_pause(2, 3)
 
@@ -36,92 +101,56 @@ def trade_from_website(driver):
         print("  Looking for button...")
         clicked = False
         for btn in driver.find_elements(By.TAG_NAME, "button"):
-            if 'צור' in btn.text:
+            if 'generate new trade' in btn.text.strip().lower():
                 btn.click()
                 clicked = True
                 print(f"  Clicked: '{btn.text.strip()}' [OK]")
                 break
         if not clicked:
-            print("  Button not found!")
+            print("  Button not found! Buttons seen on page:")
+            for btn in driver.find_elements(By.TAG_NAME, "button"):
+                text = btn.text.strip()
+                if text:
+                    print(f"    '{text}'")
             driver.switch_to.window(tv_tab)
             return
 
         humanize.long_pause(2, 3)
 
-        print("  Reading trade data...")
-        page_text = driver.find_element(By.TAG_NAME, "body").text
-        print("  Page preview: " + page_text[:300].replace("\n", " | "))
-
-        data = {'direction': None, 'tp': None, 'sl': None, 'contracts': 1}
-
-        all_elements = driver.find_elements(By.XPATH, "//*[not(self::script) and not(self::style)]")
-        texts = []
-        for el in all_elements:
-            try:
-                t = el.text.strip()
-                if t and len(t) < 50:
-                    texts.append(t)
-            except Exception:
-                pass
-
-        print("  Short elements found:")
-        for t in texts:
-            if any(w in t for w in ['LONG', 'SHORT', 'טיקים', 'חוזים', 'TAKE', 'STOP']):
-                print(f"    '{t}'")
-
-        for t in texts:
-            if t == 'LONG':
-                data['direction'] = 'buy'
-                break
-            if t == 'SHORT':
-                data['direction'] = 'sell'
-                break
-
-        for i, t in enumerate(texts):
-            if 'TAKE PROFIT' in t.upper():
-                for j in range(i + 1, min(i + 5, len(texts))):
-                    m = re.match(r'^(\d+)\s*טיקים', texts[j])
-                    if m:
-                        data['tp'] = int(m.group(1))
-                        break
-            if 'STOP LOSS' in t.upper():
-                for j in range(i + 1, min(i + 5, len(texts))):
-                    m = re.match(r'^(\d+)\s*טיקים', texts[j])
-                    if m:
-                        data['sl'] = int(m.group(1))
-                        break
-
-        for i, t in enumerate(texts):
-            if 'חוזים' in t or 'חוזה' in t:
-                nums = re.findall(r'\d+', t)
-                if nums:
-                    data['contracts'] = int(nums[0])
-                elif i + 1 < len(texts):
-                    nums = re.findall(r'\d+', texts[i + 1])
-                    if nums:
-                        data['contracts'] = int(nums[0])
-                break
-
-        print(f"  Direction: {data['direction']}")
-        print(f"  TP:        {data['tp']} ticks")
-        print(f"  SL:        {data['sl']} ticks")
-        print(f"  Contracts: {data['contracts']}")
+        print("  Reading trade parameters...")
+        params = _extract_trade_parameters(driver)
+        print(f"  Asset:       {params['asset']}")
+        print(f"  Direction:   {params['direction']}")
+        print(f"  Contracts:   {params['contracts']} {params['contract_size']}")
+        print(f"  Stop Loss:   {params['sl_ticks']} ticks")
+        print(f"  Take Profit: {params['tp_ticks']} ticks")
 
         driver.switch_to.window(tv_tab)
         print("  Back to TradingView [OK]")
-        humanize.long_pause(1, 2)
 
-        direction = data['direction'] or 'buy'
-        tp = int(data['tp'] or 1000)
-        sl = int(data['sl'] or 1000)
-        contracts = int(data['contracts'] or 1)
+        direction = {'LONG': 'buy', 'SHORT': 'sell'}.get(params['direction'])
+        missing = [k for k in ('asset', 'contracts', 'sl_ticks', 'tp_ticks') if params[k] is None]
+        if direction is None:
+            missing.append('direction')
+        if missing:
+            print(f"  [FAIL] Missing trade parameters ({', '.join(missing)}) - not executing.")
+            return
 
-        print(f"\n  Executing: {direction.upper()} | TP={tp} | SL={sl} | contracts={contracts}")
-        result = trading.place_order(driver, tp_dollars=tp, sl_dollars=sl, side=direction, units=contracts)
+        load_chart_for_signal(driver, params['asset'], params['contract_size'])
+
+        print(f"\n  Executing: {direction.upper()} | TP={params['tp_ticks']} ticks | "
+              f"SL={params['sl_ticks']} ticks | contracts={params['contracts']}")
+        result = trading.place_order(
+            driver,
+            tp_ticks=params['tp_ticks'],
+            sl_ticks=params['sl_ticks'],
+            side=direction,
+            units=params['contracts'],
+        )
         if result:
             print("\n[OK] Trade executed!")
         else:
-            print("\n[FAIL] Trade FAILED - button not found!")
+            print("\n[FAIL] Trade execution failed!")
 
     except Exception as e:
         print(f"\n[FAIL] Error: {e}")
