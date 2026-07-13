@@ -22,13 +22,13 @@ def trade_from_website(driver):
         web_tab = all_tabs[-1]
         driver.switch_to.window(web_tab)
         state.session.web_tab = web_tab
-        print("  Website tab opened ✓")
+        print("  Website tab opened [OK]")
         humanize.long_pause(2, 3)
 
         tg_logged_in = login.ensure_tradinggenerator_login(driver)
         status.update(tradinggenerator_logged_in=tg_logged_in)
         if not tg_logged_in:
-            print("  ❌ TradingGenerator login failed — aborting.")
+            print("  [FAIL] TradingGenerator login failed - aborting.")
             driver.switch_to.window(tv_tab)
             return
         humanize.long_pause(1, 2)
@@ -39,7 +39,7 @@ def trade_from_website(driver):
             if 'צור' in btn.text:
                 btn.click()
                 clicked = True
-                print(f"  Clicked: '{btn.text.strip()}' ✓")
+                print(f"  Clicked: '{btn.text.strip()}' [OK]")
                 break
         if not clicked:
             print("  Button not found!")
@@ -108,7 +108,7 @@ def trade_from_website(driver):
         print(f"  Contracts: {data['contracts']}")
 
         driver.switch_to.window(tv_tab)
-        print("  Back to TradingView ✓")
+        print("  Back to TradingView [OK]")
         humanize.long_pause(1, 2)
 
         direction = data['direction'] or 'buy'
@@ -119,12 +119,12 @@ def trade_from_website(driver):
         print(f"\n  Executing: {direction.upper()} | TP={tp} | SL={sl} | contracts={contracts}")
         result = trading.place_order(driver, tp_dollars=tp, sl_dollars=sl, side=direction, units=contracts)
         if result:
-            print("\n✅ Trade executed!")
+            print("\n[OK] Trade executed!")
         else:
-            print("\n❌ Trade FAILED — button not found!")
+            print("\n[FAIL] Trade FAILED - button not found!")
 
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        print(f"\n[FAIL] Error: {e}")
         import traceback
         traceback.print_exc()
         try:

@@ -28,11 +28,11 @@ def ensure_tradinggenerator_login(driver):
     only kicks in when there's no valid session cookie yet.
     """
     if not is_login_form_present(driver):
-        print("  Already logged in (no login form found) ✓")
+        print("  Already logged in (no login form found) [OK]")
         return True
 
     if not config.TRADINGGENERATOR_USERNAME or not config.TRADINGGENERATOR_PASSWORD:
-        print("  Login form detected but no credentials in .env — log in manually.")
+        print("  Login form detected but no credentials in .env - log in manually.")
         return False
 
     print("  Login form detected, filling credentials...")
@@ -77,8 +77,8 @@ def ensure_tradinggenerator_login(driver):
     humanize.long_pause(2, 3)
 
     if is_login_form_present(driver):
-        print("  Login failed — password field still present after submit.")
+        print("  Login failed - password field still present after submit.")
         return False
 
-    print("  Login succeeded ✓")
+    print("  Login succeeded [OK]")
     return True

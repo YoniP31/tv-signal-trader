@@ -17,7 +17,7 @@ def place_order(driver, tp_dollars=2000, sl_dollars=2000, side="buy", units=1):
     else:
         body.send_keys(Keys.SHIFT + 'b')
     humanize.long_pause(1.5, 2.5)
-    print(f"  {side.upper()} ✓")
+    print(f"  {side.upper()} [OK]")
 
     # 1. Market order
     print("\n[1] Selecting Market order...")
@@ -28,7 +28,7 @@ def place_order(driver, tp_dollars=2000, sl_dollars=2000, side="buy", units=1):
                 humanize.pause(0.3, 0.6)
                 driver.execute_script("arguments[0].click();", b)
                 humanize.pause(0.6, 1.2)
-                print("  Market ✓")
+                print("  Market [OK]")
                 break
     except Exception:
         pass
@@ -41,7 +41,7 @@ def place_order(driver, tp_dollars=2000, sl_dollars=2000, side="buy", units=1):
         top_inp, top_val, top_rect = inputs[0]
         print(f"  Units: val='{top_val}' y={int(top_rect['y'])}")
         panel.set_field(driver, top_inp, units)
-        print(f"  Units = {units} ✓")
+        print(f"  Units = {units} [OK]")
     humanize.long_pause(0.5, 1.0)
 
     # 3. Enable TP/SL
@@ -66,7 +66,7 @@ def place_order(driver, tp_dollars=2000, sl_dollars=2000, side="buy", units=1):
         tp_inp, _ = panel.find_left_input_near_label(driver, tp_label_y)
         if tp_inp:
             panel.set_field(driver, tp_inp, tp_dollars)
-            print(f"  TP = {tp_dollars} ✓")
+            print(f"  TP = {tp_dollars} [OK]")
     humanize.long_pause(0.6, 1.2)
 
     # 6. SL -> price mode + set value
@@ -76,7 +76,7 @@ def place_order(driver, tp_dollars=2000, sl_dollars=2000, side="buy", units=1):
         sl_inp, _ = panel.find_left_input_near_label(driver, sl_label_y)
         if sl_inp:
             panel.set_field(driver, sl_inp, sl_dollars)
-            print(f"  SL = {sl_dollars} ✓")
+            print(f"  SL = {sl_dollars} [OK]")
     humanize.long_pause(0.8, 1.5)
 
     # 7. Click the big Buy/Sell confirm button
