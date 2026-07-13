@@ -25,7 +25,7 @@ On startup ([tv_signal_trader/browser.py](tv_signal_trader/browser.py)):
 - Applies a few anti-bot-detection tweaks (custom user-agent, hides `navigator.webdriver`, fakes `navigator.plugins`/`navigator.languages`) so TradingView is less likely to flag the session as automated.
 - Opens `https://www.tradingview.com/chart/?symbol=BINANCE:BTCUSD`.
 
-The `chromedriver` binary is expected at `drivers/chromedriver` (or `drivers/chromedriver.exe` on Windows) — `browser.get_chromedriver_path()` picks the right filename for the current OS automatically via `platform.system()`, so the same code runs unmodified on Windows/macOS/Linux.
+The `chromedriver` path, and TradingGenerator credentials, are read from a local `.env` file ([tv_signal_trader/config.py](tv_signal_trader/config.py)) — see [tv_signal_trader/setup_wizard.py](tv_signal_trader/setup_wizard.py) below for how that gets populated.
 
 ### 2. Order placement — `place_order(driver, tp_dollars, sl_dollars, side, units)`
 
@@ -50,7 +50,11 @@ This function currently points at a placeholder test site (`https://white-martyn
 
 This is clearly a stand-in for hooking up the real trade-signal source — expect this function to be reworked once that source is defined.
 
-### 4. Interactive command loop
+### 4. First-run setup — [tv_signal_trader/setup_wizard.py](tv_signal_trader/setup_wizard.py)
+
+Before opening the browser, `ensure_configured()` checks `.env` for a valid chromedriver path and TradingGenerator username/password. Anything missing is prompted for right there in the terminal (chromedriver path is validated as a real file; the password prompt uses `getpass` so it isn't echoed) and written back to `.env` — no manual file editing needed. Already-configured values are left untouched and skipped silently.
+
+### 5. Interactive command loop
 
 Running the script drops you into a `>` prompt that accepts:
 
@@ -61,6 +65,7 @@ Running the script drops you into a `>` prompt that accepts:
 | `sell`       | Places a manual sell with $2000 TP/SL                                |
 | `scan`       | Debug: prints every input field detected in the right-hand panel     |
 | `screenshot` | Saves a screenshot to `current.png`                                  |
+| `setup`      | Re-run setup to change the chromedriver path or TradingGenerator credentials |
 | `quit`       | Closes the browser and exits                                         |
 
 ## How to run it
@@ -72,16 +77,26 @@ Running the script drops you into a `>` prompt that accepts:
    pip install -r requirements.txt
    ```
 
-3. Download the `chromedriver` build matching your installed Chrome version and place it in [drivers/](drivers/) — as `drivers/chromedriver` on macOS/Linux, or `drivers/chromedriver.exe` on Windows. The correct filename for your OS is picked automatically.
-4. (Optional) Copy [.env.example](.env.example) to `.env` and fill in your TradingGenerator username/password. This is only used as a fallback — [tv_signal_trader/login.py](tv_signal_trader/login.py) auto-fills it if `trade_from_website()` finds a login form on the signal site (e.g. no session cookie yet). Both TradingView and the signal site otherwise stay logged in via the persistent Chrome profile once you've signed in there manually once.
-5. Run the script:
+3. Download the `chromedriver` build matching your installed Chrome version from [Chrome for Testing](https://googlechromelabs.github.io/chrome-for-testing/) — you'll be prompted for its path on first run, so it can live anywhere.
+4. Run the script:
 
    ```bash
    python main.py
    ```
 
-6. On first run, Chrome opens to the TradingView chart — log into TradingView (and make sure the intended Tradovate/broker connection is active) in that window. The session persists in the `tv_profile` folder for future runs.
+5. On first run you'll be walked through setup in the terminal for anything missing: the chromedriver path, and your TradingGenerator username/password (input hidden). These get saved to a local `.env` file so you're only asked once — type `setup` at the `>` prompt anytime to change them.
+6. Chrome then opens to the TradingView chart — log into TradingView (and make sure the intended Tradovate/broker connection is active) in that window. The session persists in the `tv_profile` folder for future runs; TradingView itself isn't part of the `.env`/setup flow since it relies on that persistent cookie-based session, not password auto-fill.
 7. Type a command at the `>` prompt (see table above).
+
+## Building a standalone .exe
+
+For sharing this with a few trusted people without handing them the source, [Nuitka](https://nuitka.net/) compiles the whole app (Python → C → machine code) into a single `tv-signal-trader.exe`. This is obfuscation, not real security — treat it as raising the bar for casual inspection, not as a place to store secrets. No credentials are ever compiled in: `.env`, `status.json`, and the chromedriver path are all read from/written next to wherever the `.exe` itself lives at runtime ([tv_signal_trader/config.py](tv_signal_trader/config.py) resolves this via `sys.argv[0]`, not `__file__` — `--onefile` self-extracts to a new temp directory on every launch, so anything anchored to `__file__` would silently reset each run).
+
+1. `pip install -r requirements-build.txt`
+2. Run [build.ps1](build.ps1) (or the `nuitka` command inside it directly). Output is `dist/tv-signal-trader.exe`.
+3. Hand the recipient just that one `.exe` — they'll get the same first-run setup wizard prompting for their own chromedriver path and TradingGenerator credentials.
+4. If Nuitka builds with MSVC (`cl.exe`) rather than MinGW64, it can't statically link the Windows C runtime, so recipients without it already installed will need the [Visual C++ Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe) — a small, extremely common one-time install.
+5. Don't commit `dist/` or the `.exe` into git — publish built binaries as [GitHub Releases](https://docs.github.com/en/repositories/releasing-projects-on-github) assets instead, so the repo itself doesn't accumulate large binary blobs.
 
 ## Known limitations / things to watch out for
 

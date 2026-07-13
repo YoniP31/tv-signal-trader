@@ -4,7 +4,7 @@ import os
 
 from . import config
 
-STATUS_FILE = os.path.join(config.REPO_ROOT, "status.json")
+STATUS_FILE = os.path.join(config.APP_DIR, "status.json")
 
 
 def _read():
