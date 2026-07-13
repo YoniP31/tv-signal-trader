@@ -18,11 +18,10 @@ def main():
     login_monitor = monitor.LoginMonitor(driver)
 
     try:
-        print("Opening BTC chart...")
+        print("Opening chart...")
         driver.get(config.CHART_URL)
         humanize.long_pause(5, 8)
         print("Chart loaded:", driver.title)
-        state.session.tv_tab = driver.current_window_handle
 
         tv_logged_in = status.check_tradingview_logged_in(driver)
         status.update(tradingview_logged_in=tv_logged_in)
@@ -38,9 +37,9 @@ def main():
                 if cmd == "web":
                     signal_source.trade_from_website(driver)
                 elif cmd == "buy":
-                    trading.place_order(driver, tp_dollars=2000, sl_dollars=2000, side="buy")
+                    trading.place_order(driver, tp_ticks=150, sl_ticks=150, side="buy")
                 elif cmd == "sell":
-                    trading.place_order(driver, tp_dollars=2000, sl_dollars=2000, side="sell")
+                    trading.place_order(driver, tp_ticks=150, sl_ticks=150, side="sell")
                 elif cmd == "scan":
                     panel.scan_inputs(driver)
                 elif cmd == "screenshot":

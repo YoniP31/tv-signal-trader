@@ -65,81 +65,96 @@ def enable_tp_sl_toggles(driver):
         pass
 
 
-def get_right_indicator_text(driver, label_y, tolerance=80):
-    result = driver.execute_script("""
-        var labelY = arguments[0], tol = arguments[1];
-        var all = document.querySelectorAll('button, span, div');
-        var best = null, bestX = 0;
+def ensure_ticks_mode(driver, button_qa_id, label_name):
+    """Makes sure the TP/SL bracket dropdown (identified by `button_qa_id`)
+    is set to 'Ticks' rather than 'Price'/'% price'/'Reward'/etc.
+
+    Unlike the quantity-type dropdown, individual options here don't have a
+    stable data-qa-id of their own (the button's own data-qa-id changes to
+    reflect whichever mode is currently selected, e.g.
+    "bracket-input-type-Pips", so it can't be used as a fixed target either).
+    Ticks is always the 2nd option (index 1, top to bottom) in the menu.
+    """
+    try:
+        button = driver.find_element(By.CSS_SELECTOR, f'[data-qa-id="{button_qa_id}"]')
+    except Exception:
+        print(f"  {label_name} dropdown button not found")
+        return False
+
+    current = button.text.strip()
+    print(f"  {label_name} mode: '{current}'")
+    if 'tick' in current.lower():
+        return True
+
+    try:
+        driver.execute_script("arguments[0].click();", button)
+        humanize.pause(0.4, 0.8)
+        clicked = driver.execute_script("""
+            var items = Array.prototype.slice.call(
+                document.querySelectorAll('[data-is-popover-item-button="true"]')
+            ).filter(function(el) { return el.offsetParent; });
+            items.sort(function(a, b) {
+                return a.getBoundingClientRect().top - b.getBoundingClientRect().top;
+            });
+            if (items.length > 1) { items[1].click(); return true; }
+            return false;
+        """)
+        humanize.pause(0.4, 0.8)
+        if not clicked:
+            print(f"  Could not find 'Ticks' option in the {label_name} dropdown menu")
+        return clicked
+    except Exception:
+        print(f"  Error selecting Ticks mode for {label_name}")
+        return False
+
+
+def ensure_units_mode(driver):
+    """Makes sure the "Quantity type" dropdown is set to 'Units' rather than
+    'Contracts'/'Lots'/etc."""
+    try:
+        container = driver.find_element(By.ID, "quantity-dropdown-types")
+    except Exception:
+        print("  Quantity type dropdown not found")
+        return False
+
+    quantity_type = container.text.strip()
+    print(f"  Quantity type: '{quantity_type}'")
+    if quantity_type == 'Units':
+        return True
+
+    try:
+        driver.execute_script("arguments[0].click();", container)
+        humanize.pause(0.4, 0.8)
+        units_option = driver.find_element(By.CSS_SELECTOR, '[data-qa-id="quantity-type-units"]')
+        driver.execute_script("arguments[0].click();", units_option)
+        humanize.pause(0.4, 0.8)
+        return True
+    except Exception:
+        print("  Could not find 'Units' option in the dropdown menu")
+        return False
+
+
+def ensure_exits_expanded(driver):
+    """Clicks the 'Exits' section header to reveal the TP/SL controls, if
+    they aren't already visible."""
+    if find_label_y(driver, "take profit", quiet=True) is not None:
+        return True
+    clicked = driver.execute_script("""
+        var all = document.querySelectorAll('button, div, span');
         for (var i = 0; i < all.length; i++) {
             var el = all[i];
             if (!el.offsetParent) continue;
             var rect = el.getBoundingClientRect();
             if (rect.x < 1050) continue;
-            if (rect.y < labelY + 5)  continue;
-            if (rect.y > labelY + tol) continue;
-            var txt = (el.innerText || el.textContent || '').trim().toLowerCase();
-            if ((txt === 'price' || txt === 'ticks') && rect.x > bestX) {
-                best  = txt;
-                bestX = rect.x;
-            }
+            if ((el.innerText || '').trim() === 'Exits') { el.click(); return true; }
         }
-        return best;
-    """, label_y, tolerance)
-    return result
+        return false;
+    """)
+    humanize.pause(0.6, 1.0)
+    return clicked
 
 
-def click_swap_button_near_label(driver, label_y, tolerance=80):
-    result = driver.execute_script("""
-        var labelY = arguments[0], tol = arguments[1];
-        var allBtns = document.querySelectorAll('button');
-        var best = null;
-        for (var i = 0; i < allBtns.length; i++) {
-            var btn  = allBtns[i];
-            if (!btn.offsetParent) continue;
-            var rect = btn.getBoundingClientRect();
-            if (rect.x < 1050) continue;
-            if (rect.width < 5 || rect.width > 45) continue;
-            if (rect.y < labelY + 5)  continue;
-            if (rect.y > labelY + tol) continue;
-            if (best === null || rect.y < best.rect.y) {
-                best = {btn: btn, rect: rect};
-            }
-        }
-        if (best) {
-            best.btn.click();
-            return 'clicked';
-        }
-        return 'not_found';
-    """, label_y, tolerance)
-    return 'clicked' in result
-
-
-def ensure_price_mode(driver, label_y, label_name):
-    for attempt in range(3):
-        mode = get_right_indicator_text(driver, label_y)
-        print(f"  {label_name} mode: '{mode}' (attempt {attempt+1})")
-        if mode == 'price':
-            return True
-        humanize.pause(0.3, 0.6)
-        click_swap_button_near_label(driver, label_y)
-        humanize.pause(0.6, 1.0)
-    return False
-
-
-def find_left_input_near_label(driver, label_y, tolerance=80):
-    candidates = []
-    for inp, val, rect in get_panel_inputs(driver):
-        if rect['y'] >= label_y + 5 and rect['y'] <= label_y + tolerance:
-            candidates.append((inp, val, rect))
-    if not candidates:
-        return None, None
-    candidates.sort(key=lambda x: x[2]['x'])
-    inp, val, rect = candidates[0]
-    print(f"    Left input: val='{val}' x={int(rect['x'])} y={int(rect['y'])}")
-    return inp, val
-
-
-def find_label_y(driver, label_text):
+def find_label_y(driver, label_text, quiet=False):
     result = driver.execute_script("""
         var target = arguments[0].toLowerCase();
         var all = document.querySelectorAll('span, div, label');
@@ -153,5 +168,6 @@ def find_label_y(driver, label_text):
         }
         return null;
     """, label_text)
-    print(f"  '{label_text}' label y={result}")
+    if not quiet:
+        print(f"  '{label_text}' label y={result}")
     return result

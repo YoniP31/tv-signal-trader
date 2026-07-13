@@ -5,9 +5,9 @@ from . import humanize
 from . import panel
 
 
-def place_order(driver, tp_dollars=2000, sl_dollars=2000, side="buy", units=1):
-    # 0. Select Buy/Sell side — body.click() + Shift+S/B
-    print(f"\n[0] Selecting {side.upper()} side...")
+def place_order(driver, tp_ticks=150, sl_ticks=150, side="buy", units=1):
+    # 1. Select Buy/Sell side
+    print(f"\n[1] Selecting {side.upper()} side...")
     humanize.pause(0.4, 0.8)
     body = driver.find_element(By.TAG_NAME, "body")
     body.click()
@@ -19,8 +19,8 @@ def place_order(driver, tp_dollars=2000, sl_dollars=2000, side="buy", units=1):
     humanize.long_pause(1.5, 2.5)
     print(f"  {side.upper()} [OK]")
 
-    # 1. Market order
-    print("\n[1] Selecting Market order...")
+    # 2. Market order
+    print("\n[2] Selecting Market order...")
     humanize.pause(0.5, 1.0)
     try:
         for b in driver.find_elements(By.TAG_NAME, "button"):
@@ -33,55 +33,57 @@ def place_order(driver, tp_dollars=2000, sl_dollars=2000, side="buy", units=1):
     except Exception:
         pass
 
-    # 2. Units
-    print(f"\n[2] Setting Units = {units}...")
+    # 3. Units (making sure the quantity dropdown says "Units", not
+    # "Contracts"/"Lots"/etc., before typing the contract count)
+    print(f"\n[3] Setting Units = {units}...")
     humanize.long_pause(0.5, 1.0)
-    inputs = panel.get_panel_inputs(driver)
-    if inputs:
-        top_inp, top_val, top_rect = inputs[0]
-        print(f"  Units: val='{top_val}' y={int(top_rect['y'])}")
-        panel.set_field(driver, top_inp, units)
+    if not panel.ensure_units_mode(driver):
+        print("  WARNING: could not confirm 'Units' mode")
+    try:
+        quantity_inp = driver.find_element(By.ID, "quantity-field")
+        panel.set_field(driver, quantity_inp, units)
         print(f"  Units = {units} [OK]")
+    except Exception:
+        print("  WARNING: quantity-field not found")
     humanize.long_pause(0.5, 1.0)
 
-    # 3. Enable TP/SL
-    print("\n[3] Enabling TP/SL toggles...")
+    # 4. Reveal the Exits section (TP/SL controls) if it's collapsed
+    print("\n[4] Making sure Exits section is expanded...")
+    panel.ensure_exits_expanded(driver)
+    humanize.long_pause(0.5, 1.0)
+
+    # 5. Enable TP/SL toggles
+    print("\n[5] Enabling TP/SL toggles...")
     panel.enable_tp_sl_toggles(driver)
     humanize.long_pause(1.0, 2.0)
 
-    # 4. Find TP / SL labels
-    print("\n[4] Finding TP / SL label positions...")
-    tp_label_y = panel.find_label_y(driver, "take profit")
-    sl_label_y = panel.find_label_y(driver, "stop loss")
+    # 6. Switch TP/SL to Ticks mode
+    print("\n[6] Switching TP/SL to Ticks mode...")
+    panel.ensure_ticks_mode(driver, "order-ticket-take-profit-dropdown-button", "TP")
+    panel.ensure_ticks_mode(driver, "order-ticket-stop-loss-dropdown-button", "SL")
+    humanize.long_pause(0.4, 0.8)
 
-    if tp_label_y is None or sl_label_y is None:
-        print("  ERROR: Could not find TP or SL labels")
-        driver.save_screenshot("debug.png")
-        return False
+    # 7. Enter the tick values
+    print("\n[7] Setting TP/SL tick values...")
+    try:
+        tp_inp = driver.find_element(By.CSS_SELECTOR, '[data-qa-id~="order-ticket-take-profit-input"]')
+        panel.set_field(driver, tp_inp, tp_ticks)
+        print(f"  TP = {tp_ticks} ticks [OK]")
+    except Exception:
+        print("  WARNING: take-profit input not found")
+    humanize.long_pause(0.4, 0.8)
 
-    # 5. TP -> price mode + set value
-    print("\n[5] Setting TP...")
-    if panel.ensure_price_mode(driver, tp_label_y, "TP"):
-        humanize.long_pause(0.4, 0.8)
-        tp_inp, _ = panel.find_left_input_near_label(driver, tp_label_y)
-        if tp_inp:
-            panel.set_field(driver, tp_inp, tp_dollars)
-            print(f"  TP = {tp_dollars} [OK]")
+    try:
+        sl_inp = driver.find_element(By.CSS_SELECTOR, '[data-qa-id~="order-ticket-stop-loss-input"]')
+        panel.set_field(driver, sl_inp, sl_ticks)
+        print(f"  SL = {sl_ticks} ticks [OK]")
+    except Exception:
+        print("  WARNING: stop-loss input not found")
     humanize.long_pause(0.6, 1.2)
 
-    # 6. SL -> price mode + set value
-    print("\n[6] Setting SL...")
-    if panel.ensure_price_mode(driver, sl_label_y, "SL"):
-        humanize.long_pause(0.4, 0.8)
-        sl_inp, _ = panel.find_left_input_near_label(driver, sl_label_y)
-        if sl_inp:
-            panel.set_field(driver, sl_inp, sl_dollars)
-            print(f"  SL = {sl_dollars} [OK]")
-    humanize.long_pause(0.8, 1.5)
-
-    # 7. Click the big Buy/Sell confirm button
+    # 8. Click the big Buy/Sell confirm button
     label = "Buy" if side == "buy" else "Sell"
-    print(f"\n[7] Clicking {label} button...")
+    print(f"\n[8] Clicking {label} button...")
     humanize.long_pause(0.5, 1.0)
     clicked = False
     for b in driver.find_elements(By.TAG_NAME, "button"):
