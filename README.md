@@ -10,8 +10,8 @@ The implementation lives in the [tv_signal_trader/](tv_signal_trader/) package, 
 |------|----------------|
 | [main.py](main.py) | Entry point — `python main.py` |
 | [tv_signal_trader/config.py](tv_signal_trader/config.py) | Paths, URLs, `.env`-backed settings, and other constants |
-| [tv_signal_trader/setup_wizard.py](tv_signal_trader/setup_wizard.py) | First-run/`setup` command: prompts for and persists chromedriver path + TradingGenerator credentials |
-| [tv_signal_trader/browser.py](tv_signal_trader/browser.py) | Chrome/chromedriver setup and stealth tweaks |
+| [tv_signal_trader/setup_wizard.py](tv_signal_trader/setup_wizard.py) | First-run/`setup` command: prompts for and persists TradingGenerator credentials |
+| [tv_signal_trader/browser.py](tv_signal_trader/browser.py) | Chrome setup and stealth tweaks |
 | [tv_signal_trader/humanize.py](tv_signal_trader/humanize.py) | Randomized pauses and human-like typing |
 | [tv_signal_trader/panel.py](tv_signal_trader/panel.py) | Low-level DOM helpers for reading/filling the order-ticket panel |
 | [tv_signal_trader/trading.py](tv_signal_trader/trading.py) | All TradingView-side actions: `place_order()`, chart switching, waiting for a trade to close |
@@ -24,15 +24,15 @@ The implementation lives in the [tv_signal_trader/](tv_signal_trader/) package, 
 
 On startup ([tv_signal_trader/browser.py](tv_signal_trader/browser.py)):
 
-- Launches Chrome via `chromedriver` with a persistent profile folder (`tv_profile` in the user's home directory, resolved with `os.path.expanduser("~")`), so you only need to log into TradingView once.
+- Launches Chrome via `chromedriver` with a persistent profile folder (`tv_profile` in the user's home directory, resolved with `os.path.expanduser("~")`), so you only need to log into TradingView once. No explicit driver executable is configured — [Selenium Manager](https://www.selenium.dev/documentation/selenium_manager/) (built into Selenium 4.6+) detects the installed Chrome version and downloads a matching `chromedriver` automatically on first run, caching it for later ones.
 - Applies a few anti-bot-detection tweaks (custom user-agent, hides `navigator.webdriver`, fakes `navigator.plugins`/`navigator.languages`) so TradingView is less likely to flag the session as automated.
 - Opens the chart at `config.CHART_URL` (the default startup symbol — the `web` flow below switches it to whatever symbol the signal actually calls for).
 
-The `chromedriver` path, and TradingGenerator credentials, are read from a local `.env` file ([tv_signal_trader/config.py](tv_signal_trader/config.py)) — see "First-run setup" below for how that gets populated.
+TradingGenerator credentials are read from a local `.env` file ([tv_signal_trader/config.py](tv_signal_trader/config.py)) — see "First-run setup" below for how that gets populated.
 
 ### 2. First-run setup — [tv_signal_trader/setup_wizard.py](tv_signal_trader/setup_wizard.py)
 
-Before opening the browser, `ensure_configured()` checks `.env` for a valid chromedriver path and TradingGenerator username/password. Anything missing is prompted for right there in the terminal (chromedriver path is validated as a real file; the password prompt uses `getpass` so it isn't echoed) and written back to `.env` — no manual file editing needed. Already-configured values are left untouched and skipped silently. Type `setup` at the `>` prompt anytime to change any of them.
+Before opening the browser, `ensure_configured()` checks `.env` for a TradingGenerator username/password. Anything missing is prompted for right there in the terminal and written back to `.env` — no manual file editing needed. The password prompt is plain, visible `input()` rather than a masked one: `getpass` reads via the Windows console API directly rather than stdin, which mishandled pasted text and hid what was typed with no way to catch the corruption. Already-configured values are left untouched and skipped silently. Type `setup` at the `>` prompt anytime to change either of them.
 
 ### 3. Order placement — `place_order(driver, tp_ticks, sl_ticks, side, units)`
 
@@ -57,7 +57,7 @@ All typing is done character-by-character with randomized delays (`type_humanlik
 3. Reads the TRADE PARAMETERS box: asset (e.g. `NQ`), direction (`LONG`/`SHORT`), contracts + size (e.g. `1 MINI`), and stop-loss/take-profit in ticks (`tradinggenerator.read_trade_parameters`). If anything required is missing, reports **Trade Not Taken** back to TradingGenerator and stops.
 4. Switches to TradingView and resolves the ticker for that asset — `MINI` maps to the Micro contract (`NQ` → `MNQ`), with TradingView's `1!` continuous-contract suffix appended (e.g. `MNQ1!`) — then navigates the chart there (`trading.load_chart_for_signal`).
 5. Calls `place_order(...)` with the parsed direction/ticks/contracts. If entry fails, reports **Trade Not Taken** back to TradingGenerator and stops.
-6. Waits for the position to close and determine which side it hit (`trading.wait_for_close`) — **not implemented yet**: this needs TradingView Positions/History panel selectors that haven't been identified. It currently always returns "unknown", which stops the loop after one trade rather than guessing at (and misreporting) the outcome. See "Planned work" below.
+6. Waits for the position to close and determines which side it hit (`trading.wait_for_close`) by polling the broker's Orders table: a filled TP/SL order auto-cancels its linked sibling, so once one bracket leg shows `Status: Filled` and the other `Status: Cancelled`, that's a direct, reliable signal — no need to infer the outcome from price or P&L sign. Returns nothing (stopping the loop rather than guessing) if it times out or the bracket resolves without either leg actually filling, e.g. the position was closed manually.
 7. Reports the result back to TradingGenerator (`tradinggenerator.report_trade_result`) and loops back to step 2.
 
 ### 5. Status tracking — [tv_signal_trader/status.py](tv_signal_trader/status.py), [state.py](tv_signal_trader/state.py), [monitor.py](tv_signal_trader/monitor.py)
@@ -73,9 +73,7 @@ Running the script drops you into a `>` prompt that accepts:
 | `web`        | Runs `run_web_loop()` — the automatic trading loop (Ctrl+C to stop) |
 | `buy`        | Places a manual buy with 150-tick TP/SL                              |
 | `sell`       | Places a manual sell with 150-tick TP/SL                             |
-| `scan`       | Debug: prints every input field detected in the right-hand panel     |
-| `screenshot` | Saves a screenshot to `current.png`                                  |
-| `setup`      | Re-run setup to change the chromedriver path or TradingGenerator credentials |
+| `setup`      | Re-run setup to change your TradingGenerator credentials |
 | `quit`       | Closes the browser and exits                                         |
 
 ## How to run it
@@ -87,24 +85,23 @@ Running the script drops you into a `>` prompt that accepts:
    pip install -r requirements.txt
    ```
 
-3. Download the `chromedriver` build matching your installed Chrome version from [dreamshao\chromedriver](https://github.com/dreamshao/chromedriver/blob/main/150.0.7871.49%20chromedriver-win64.zip), click the download icon on the right side — you'll be prompted for its path on first run, so it can live anywhere.
-4. Run the script:
+3. Run the script:
 
    ```bash
    python main.py
    ```
 
-5. On first run you'll be walked through setup in the terminal for anything missing: the chromedriver path, and your TradingGenerator username/password (input hidden). These get saved to a local `.env` file so you're only asked once — type `setup` at the `>` prompt anytime to change them.
-6. Chrome then opens to the chart — log into TradingView (and make sure the intended Tradovate/broker connection is active) in that window. The session persists in the `tv_profile` folder for future runs; TradingView itself isn't part of the `.env`/setup flow since it relies on that persistent cookie-based session, not password auto-fill.
-7. Type a command at the `>` prompt (see table above).
+4. On first run you'll be walked through setup in the terminal for anything missing: your TradingGenerator username/password. This gets saved to a local `.env` file so you're only asked once — type `setup` at the `>` prompt anytime to change it. (No chromedriver download needed — Selenium Manager fetches it automatically the first time Chrome launches.)
+5. Chrome then opens to the chart — log into TradingView (and make sure the intended Tradovate/broker connection is active) in that window. The session persists in the `tv_profile` folder for future runs; TradingView itself isn't part of the `.env`/setup flow since it relies on that persistent cookie-based session, not password auto-fill.
+6. Type a command at the `>` prompt (see table above).
 
 ## Building a standalone .exe
 
-For sharing this with a few trusted people without handing them the source, [Nuitka](https://nuitka.net/) compiles the whole app (Python → C → machine code) into a single `tv-signal-trader.exe`. This is obfuscation, not real security — treat it as raising the bar for casual inspection, not as a place to store secrets. No credentials are ever compiled in: `.env`, `status.json`, and the chromedriver path are all read from/written next to wherever the `.exe` itself lives at runtime ([tv_signal_trader/config.py](tv_signal_trader/config.py) resolves this via `sys.argv[0]`, not `__file__` — `--onefile` self-extracts to a new temp directory on every launch, so anything anchored to `__file__` would silently reset each run).
+For sharing this with a few trusted people without handing them the source, [Nuitka](https://nuitka.net/) compiles the whole app (Python → C → machine code) into a single `tv-signal-trader.exe`. This is obfuscation, not real security — treat it as raising the bar for casual inspection, not as a place to store secrets. No credentials are ever compiled in: `.env` and `status.json` are read from/written next to wherever the `.exe` itself lives at runtime ([tv_signal_trader/config.py](tv_signal_trader/config.py) resolves this via `sys.argv[0]`, not `__file__` — `--onefile` self-extracts to a new temp directory on every launch, so anything anchored to `__file__` would silently reset each run).
 
 1. `pip install -r requirements-build.txt`
 2. Run [build.ps1](build.ps1) (or the `nuitka` command inside it directly). Output is `dist/tv-signal-trader.exe`.
-3. Hand the recipient just that one `.exe` — they'll get the same first-run setup wizard prompting for their own chromedriver path and TradingGenerator credentials.
+3. Hand the recipient just that one `.exe` — they'll get the same first-run setup wizard prompting for their own TradingGenerator credentials, and Selenium Manager still fetches chromedriver on their machine automatically.
 4. If Nuitka builds with MSVC (`cl.exe`) rather than MinGW64, it can't statically link the Windows C runtime, so recipients without it already installed will need the [Visual C++ Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe) — a small, extremely common one-time install.
 5. Don't commit `dist/` or the `.exe` into git — publish built binaries as [GitHub Releases](https://docs.github.com/en/repositories/releasing-projects-on-github) assets instead, so the repo itself doesn't accumulate large binary blobs.
 
@@ -119,9 +116,9 @@ For sharing this with a few trusted people without handing them the source, [Nui
 
 Notes for follow-up work.
 
-### Automatic `web` loop — mostly done
+### Automatic `web` loop — implemented, needs real-world soak testing
 
-The loop itself (generate → execute → wait for close → report result → repeat, stopping cleanly on the daily-lock or any failure) is implemented in `run_web_loop()`. What's missing: `trading.wait_for_close()` is a stub — it needs real TradingView selectors for the Positions/History panel (which entry disappears when a position closes, and how to tell a take-profit fill apart from a stop-loss fill) to actually detect how a trade closed. Until that's filled in, the loop always stops after one trade rather than guess at — and risk misreporting — the outcome.
+The full loop (generate → execute → wait for close → report result → repeat, stopping cleanly on the daily-lock or any failure) is implemented, including `trading.wait_for_close()`, which polls the broker's Orders table for the TP/SL bracket's Status to flip to "Filled"/"Cancelled". It hasn't yet been run through a full close-and-report-and-regenerate cycle end to end — worth watching closely the first few times.
 
 There's also an open question from watching the real TradingGenerator UI: after a trade, it shows a "Waiting for next trade — MM:SS" cooldown before **GENERATE NEW TRADE** becomes clickable again. `tradinggenerator.generate_trade()` doesn't currently wait out this cooldown — worth confirming whether it needs to.
 
