@@ -3,10 +3,6 @@ from selenium.webdriver.common.keys import Keys
 
 from . import humanize
 
-# The order-ticket panel is docked to the right of the chart; anything to
-# the left of this x-coordinate belongs to the chart/toolbar, not the panel.
-PANEL_X_MIN = 1050
-
 
 def set_field(driver, input_el, value):
     driver.execute_script("arguments[0].scrollIntoView(true);", input_el)
@@ -21,30 +17,6 @@ def set_field(driver, input_el, value):
     humanize.pause(0.2, 0.4)
     input_el.send_keys(Keys.TAB)
     humanize.pause(0.3, 0.6)
-
-
-def get_panel_inputs(driver):
-    result = []
-    for inp in driver.find_elements(By.XPATH, "//input"):
-        try:
-            if not inp.is_displayed():
-                continue
-            val = inp.get_attribute('value') or ''
-            rect = driver.execute_script(
-                "var r=arguments[0].getBoundingClientRect();"
-                "return {x:r.x,y:r.y,w:r.width,h:r.height};", inp)
-            if rect['x'] > PANEL_X_MIN:
-                result.append((inp, val, rect))
-        except Exception:
-            pass
-    result.sort(key=lambda x: x[2]['y'])
-    return result
-
-
-def scan_inputs(driver):
-    print("\nAll inputs in right panel:")
-    for inp, val, rect in get_panel_inputs(driver):
-        print(f"  val='{val}'  x={int(rect['x'])}  y={int(rect['y'])}")
 
 
 def enable_tp_sl_toggles(driver):

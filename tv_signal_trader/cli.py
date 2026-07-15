@@ -2,7 +2,6 @@ from . import browser
 from . import config
 from . import humanize
 from . import monitor
-from . import panel
 from . import setup_wizard
 from . import signal_source
 from . import state
@@ -30,7 +29,7 @@ def main():
 
         login_monitor.start()
 
-        print("\nCommands: 'web', 'buy', 'sell', 'scan', 'screenshot', 'setup', 'quit'")
+        print("\nCommands: 'web', 'buy', 'sell', 'setup', 'quit'")
         while True:
             cmd = input("> ").strip().lower()
             with state.session.driver_lock:
@@ -40,14 +39,8 @@ def main():
                     trading.place_order(driver, tp_ticks=150, sl_ticks=150, side="buy")
                 elif cmd == "sell":
                     trading.place_order(driver, tp_ticks=150, sl_ticks=150, side="sell")
-                elif cmd == "scan":
-                    panel.scan_inputs(driver)
-                elif cmd == "screenshot":
-                    driver.save_screenshot("current.png")
-                    print("Saved: current.png")
                 elif cmd == "setup":
                     setup_wizard.run_setup()
-                    print("  (chromedriver path change takes effect next run)")
                 elif cmd == "quit":
                     break
     finally:
