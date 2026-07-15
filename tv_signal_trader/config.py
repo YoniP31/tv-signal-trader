@@ -15,8 +15,6 @@ if _RUNNING_COMPILED:
 else:
     APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-DRIVERS_DIR = os.path.join(APP_DIR, "drivers")
-
 PROFILE_DIR = os.path.join(os.path.expanduser("~"), "tv_profile")
 
 CHART_URL = "https://www.tradingview.com/chart/?symbol=MNQ1!"
@@ -29,6 +27,8 @@ USER_AGENT = (
 )
 
 LOGIN_POLL_INTERVAL_SECONDS = 15
+TRADE_CLOSE_POLL_INTERVAL_SECONDS = 20
+TRADE_CLOSE_TIMEOUT_SECONDS = 24 * 60 * 60
 
 
 ENV_FILE = os.path.join(APP_DIR, ".env")
@@ -74,11 +74,10 @@ def set_env_values(values):
 
 
 def _reload_env():
-    global _env, TRADINGGENERATOR_USERNAME, TRADINGGENERATOR_PASSWORD, CHROMEDRIVER_PATH
+    global _env, TRADINGGENERATOR_USERNAME, TRADINGGENERATOR_PASSWORD
     _env = _load_env_file(ENV_FILE)
     TRADINGGENERATOR_USERNAME = _env.get("TRADINGGENERATOR_USERNAME", "")
     TRADINGGENERATOR_PASSWORD = _env.get("TRADINGGENERATOR_PASSWORD", "")
-    CHROMEDRIVER_PATH = _env.get("CHROMEDRIVER_PATH", "")
 
 
 _reload_env()

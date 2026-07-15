@@ -1,6 +1,5 @@
-# Chrome / Selenium
-drivers/chromedriver
-drivers/chromedriver.exe
+# Chrome / Selenium (chromedriver itself is auto-downloaded by Selenium
+# Manager into its own cache dir, not this repo)
 tv_profile/
 *.profile/
 

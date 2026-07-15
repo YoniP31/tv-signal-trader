@@ -1,22 +1,7 @@
-import os
-import platform
-
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
 
 from . import config
-
-
-def default_chromedriver_guess():
-    """Where chromedriver would traditionally live, used only to pre-fill the
-    setup prompt if nothing's been configured yet."""
-    filename = "chromedriver.exe" if platform.system() == "Windows" else "chromedriver"
-    return os.path.join(config.DRIVERS_DIR, filename)
-
-
-def get_chromedriver_path():
-    return config.CHROMEDRIVER_PATH
 
 
 def build_options():
@@ -34,8 +19,10 @@ def build_options():
 
 
 def create_driver():
-    service = Service(get_chromedriver_path())
-    driver = webdriver.Chrome(service=service, options=build_options())
+    # No explicit Service/executable path: Selenium Manager (built into
+    # Selenium 4.6+) detects the installed Chrome version and downloads a
+    # matching chromedriver automatically, caching it for later runs.
+    driver = webdriver.Chrome(options=build_options())
     driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
         "source": """
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
