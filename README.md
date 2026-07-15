@@ -14,9 +14,9 @@ The implementation lives in the [tv_signal_trader/](tv_signal_trader/) package, 
 | [tv_signal_trader/browser.py](tv_signal_trader/browser.py) | Chrome/chromedriver setup and stealth tweaks |
 | [tv_signal_trader/humanize.py](tv_signal_trader/humanize.py) | Randomized pauses and human-like typing |
 | [tv_signal_trader/panel.py](tv_signal_trader/panel.py) | Low-level DOM helpers for reading/filling the order-ticket panel |
-| [tv_signal_trader/trading.py](tv_signal_trader/trading.py) | `place_order()` — the core trading action |
-| [tv_signal_trader/signal_source.py](tv_signal_trader/signal_source.py) | `trade_from_website()` — reads a TradingGenerator signal and triggers a trade |
-| [tv_signal_trader/login.py](tv_signal_trader/login.py) | TradingGenerator auto-login fallback |
+| [tv_signal_trader/trading.py](tv_signal_trader/trading.py) | All TradingView-side actions: `place_order()`, chart switching, waiting for a trade to close |
+| [tv_signal_trader/tradinggenerator.py](tv_signal_trader/tradinggenerator.py) | All TradingGenerator-side actions: login, generating a trade, reading its parameters, reporting the result |
+| [tv_signal_trader/signal_source.py](tv_signal_trader/signal_source.py) | `run_web_loop()` — orchestrates the two above into the automatic trading loop |
 | [tv_signal_trader/status.py](tv_signal_trader/status.py) / [state.py](tv_signal_trader/state.py) / [monitor.py](tv_signal_trader/monitor.py) | `status.json` tracking (app running, login state) and the background login-poller |
 | [tv_signal_trader/cli.py](tv_signal_trader/cli.py) | Interactive command loop |
 
@@ -48,12 +48,17 @@ This is the core trading action. It drives TradingView's order panel (the right-
 
 All typing is done character-by-character with randomized delays (`type_humanlike`), and most steps have randomized pauses between them, to look more like a human user than a script.
 
-### 4. Reading and executing a signal — `trade_from_website(driver)`
+### 4. The automatic trading loop — `run_web_loop(driver)`
 
-1. Opens TradingGenerator in a new tab (logging in automatically via [login.py](tv_signal_trader/login.py) if the session's expired) and clicks **GENERATE NEW TRADE**.
-2. Reads the TRADE PARAMETERS box off the resulting page: asset (e.g. `NQ`), direction (`LONG`/`SHORT`), contracts + size (e.g. `1 MINI`), and stop-loss/take-profit in ticks.
-3. Switches back to TradingView and resolves the TradingView ticker for that asset — `MINI` maps to the Micro contract (`NQ` → `MNQ`), with TradingView's `1!` continuous-contract suffix appended (e.g. `MNQ1!`) — then navigates the chart there.
-4. Calls `place_order(...)` with the parsed direction/ticks/contracts. If any required field couldn't be parsed, it aborts instead of guessing/falling back to a default.
+[tv_signal_trader/signal_source.py](tv_signal_trader/signal_source.py) orchestrates [tv_signal_trader/tradinggenerator.py](tv_signal_trader/tradinggenerator.py) and [tv_signal_trader/trading.py](tv_signal_trader/trading.py) into a loop, stoppable with Ctrl+C:
+
+1. Finds the already-open TradingGenerator tab, or opens one (`tradinggenerator.open_tab`), logging in automatically if the session's expired.
+2. Clicks **GENERATE NEW TRADE** (`tradinggenerator.generate_trade`) — recognizing the daily-trade-limit "locked" state as a clean stopping point rather than an error.
+3. Reads the TRADE PARAMETERS box: asset (e.g. `NQ`), direction (`LONG`/`SHORT`), contracts + size (e.g. `1 MINI`), and stop-loss/take-profit in ticks (`tradinggenerator.read_trade_parameters`). If anything required is missing, reports **Trade Not Taken** back to TradingGenerator and stops.
+4. Switches to TradingView and resolves the ticker for that asset — `MINI` maps to the Micro contract (`NQ` → `MNQ`), with TradingView's `1!` continuous-contract suffix appended (e.g. `MNQ1!`) — then navigates the chart there (`trading.load_chart_for_signal`).
+5. Calls `place_order(...)` with the parsed direction/ticks/contracts. If entry fails, reports **Trade Not Taken** back to TradingGenerator and stops.
+6. Waits for the position to close and determine which side it hit (`trading.wait_for_close`) — **not implemented yet**: this needs TradingView Positions/History panel selectors that haven't been identified. It currently always returns "unknown", which stops the loop after one trade rather than guessing at (and misreporting) the outcome. See "Planned work" below.
+7. Reports the result back to TradingGenerator (`tradinggenerator.report_trade_result`) and loops back to step 2.
 
 ### 5. Status tracking — [tv_signal_trader/status.py](tv_signal_trader/status.py), [state.py](tv_signal_trader/state.py), [monitor.py](tv_signal_trader/monitor.py)
 
@@ -65,7 +70,7 @@ Running the script drops you into a `>` prompt that accepts:
 
 | Command      | Effect                                                              |
 |--------------|----------------------------------------------------------------------|
-| `web`        | Runs `trade_from_website()` — pulls a signal and executes the trade |
+| `web`        | Runs `run_web_loop()` — the automatic trading loop (Ctrl+C to stop) |
 | `buy`        | Places a manual buy with 150-tick TP/SL                              |
 | `sell`       | Places a manual sell with 150-tick TP/SL                             |
 | `scan`       | Debug: prints every input field detected in the right-hand panel     |
@@ -112,22 +117,18 @@ For sharing this with a few trusted people without handing them the source, [Nui
 
 ## Planned work
 
-Notes for follow-up work, not yet implemented.
+Notes for follow-up work.
 
-### Automatic `web` loop
+### Automatic `web` loop — mostly done
 
-Right now `web` executes one signal and stops. The next step is a full loop:
+The loop itself (generate → execute → wait for close → report result → repeat, stopping cleanly on the daily-lock or any failure) is implemented in `run_web_loop()`. What's missing: `trading.wait_for_close()` is a stub — it needs real TradingView selectors for the Positions/History panel (which entry disappears when a position closes, and how to tell a take-profit fill apart from a stop-loss fill) to actually detect how a trade closed. Until that's filled in, the loop always stops after one trade rather than guess at — and risk misreporting — the outcome.
 
-1. After `place_order()` succeeds, watch the open position until it closes (hits its stop-loss or take-profit).
-2. Determine which one it closed at.
-3. Return to the TradingGenerator tab and click the matching **Trade Result** button (`Stop Loss -$X` / `Take Profit +$X` / `Trade Not Taken`) so its own daily P&L/trade-count tracking stays accurate.
-4. Click **GENERATE NEW TRADE** again and repeat — until the daily trade limit locks the portfolio (see issue #2).
+There's also an open question from watching the real TradingGenerator UI: after a trade, it shows a "Waiting for next trade — MM:SS" cooldown before **GENERATE NEW TRADE** becomes clickable again. `tradinggenerator.generate_trade()` doesn't currently wait out this cooldown — worth confirming whether it needs to.
 
 ### Other known follow-ups
 
 - **Harden trade entry (steps 1-2 of `place_order()`)**: these are the oldest, least-robust part of the function — "select side" (`Shift+B`/`Shift+S`) and "select Market order" — and have no real failure detection today (step 2's click loop silently swallows failures via `except: pass`). Every step should verify it actually succeeded and abort the whole trade attempt if not, instead of continuing on to type into a panel that may not be in the expected state.
 - **Automatic Tradovate connection**: log into/select the right broker connection as part of the flow instead of requiring it to already be active manually. Needs support for *multiple* Tradovate username/password pairs in `.env`/`setup_wizard.py`, plus a heuristic for choosing which account to use for a given trade (not yet defined).
-- **Separate TradingView / TradingGenerator / app-config concerns architecturally**: `trading.py`+`panel.py` (TradingView) and `signal_source.py`+`login.py` (TradingGenerator) are reasonably separated today, but not through a real interface/boundary. If TradingGenerator changes its UI or trade-parameter format, ideally only its module needs to change, with the rest of the app (config, TradingView execution, orchestration) untouched. Worth revisiting the module boundaries with this in mind before the codebase grows further.
 
 ## Repository docs
 

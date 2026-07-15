@@ -35,7 +35,7 @@ def main():
             cmd = input("> ").strip().lower()
             with state.session.driver_lock:
                 if cmd == "web":
-                    signal_source.trade_from_website(driver)
+                    signal_source.run_web_loop(driver)
                 elif cmd == "buy":
                     trading.place_order(driver, tp_ticks=150, sl_ticks=150, side="buy")
                 elif cmd == "sell":

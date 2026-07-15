@@ -5,6 +5,42 @@ from . import humanize
 from . import panel
 
 
+def resolve_symbol(asset, contract_size):
+    """Maps a TradingGenerator asset/size to a TradingView continuous-futures
+    ticker, e.g. ("NQ", "MINI") -> "MNQ1!". "1!" is TradingView's standard
+    suffix for the continuous front-month contract of a futures symbol.
+    """
+    ticker = f"M{asset}" if (contract_size or '').upper() == 'MINI' else asset
+    return f"{ticker}1!"
+
+
+def load_chart_for_signal(driver, asset, contract_size):
+    """Switches the current tab's chart to the symbol implied by asset/contract_size."""
+    symbol = resolve_symbol(asset, contract_size)
+    url = f"https://www.tradingview.com/chart/?symbol={symbol}"
+    print(f"  Switching chart to {symbol}...")
+    driver.get(url)
+    humanize.long_pause(5, 8)
+    print(f"  Chart loaded: {driver.title}")
+    return symbol
+
+
+def wait_for_close(driver):
+    """Should poll until the open position closes and return 'tp' or 'sl'
+    depending on which one it hit -- not implemented yet.
+
+    This needs real TradingView selectors for the Positions/History panel
+    (which entry disappears on close, and how to tell a take-profit fill
+    apart from a stop-loss fill) that haven't been identified yet. Returns
+    None rather than guessing, since misreporting which side a real trade
+    closed on is worse than not reporting at all.
+    """
+    print("  [TODO] wait_for_close() isn't implemented yet -- can't safely "
+          "tell how the trade closed without real TradingView Positions/"
+          "History selectors. See README 'Planned work'.")
+    return None
+
+
 def place_order(driver, tp_ticks=150, sl_ticks=150, side="buy", units=1):
     # 1. Select Buy/Sell side
     print(f"\n[1] Selecting {side.upper()} side...")
