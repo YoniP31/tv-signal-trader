@@ -82,7 +82,7 @@ Running the script drops you into a `>` prompt that accepts:
    pip install -r requirements.txt
    ```
 
-3. Download the `chromedriver` build matching your installed Chrome version from [Chrome for Testing](https://googlechromelabs.github.io/chrome-for-testing/) — you'll be prompted for its path on first run, so it can live anywhere.
+3. Download the `chromedriver` build matching your installed Chrome version from [dreamshao\chromedriver](https://github.com/dreamshao/chromedriver/blob/main/150.0.7871.49%20chromedriver-win64.zip), click the download icon on the right side — you'll be prompted for its path on first run, so it can live anywhere.
 4. Run the script:
 
    ```bash
@@ -109,6 +109,25 @@ For sharing this with a few trusted people without handing them the source, [Nui
 - **The "Ticks" bracket-mode selection is positional**: since the TP/SL dropdown's menu items don't expose a stable per-option identifier, "Ticks" is selected by assuming it's always the 2nd item in the menu — if TradingView ever reorders that menu, this breaks silently.
 - **Minimal error handling**: most failures just print a warning and move on rather than retrying or raising — check the console output after each command.
 - **Places real orders**: `place_order()` clicks the live Buy/Sell confirm button. Test against a paper/demo Tradovate connection before pointing this at a live account.
+
+## Planned work
+
+Notes for follow-up work, not yet implemented.
+
+### Automatic `web` loop
+
+Right now `web` executes one signal and stops. The next step is a full loop:
+
+1. After `place_order()` succeeds, watch the open position until it closes (hits its stop-loss or take-profit).
+2. Determine which one it closed at.
+3. Return to the TradingGenerator tab and click the matching **Trade Result** button (`Stop Loss -$X` / `Take Profit +$X` / `Trade Not Taken`) so its own daily P&L/trade-count tracking stays accurate.
+4. Click **GENERATE NEW TRADE** again and repeat — until the daily trade limit locks the portfolio (see issue #2).
+
+### Other known follow-ups
+
+- **Harden trade entry (steps 1-2 of `place_order()`)**: these are the oldest, least-robust part of the function — "select side" (`Shift+B`/`Shift+S`) and "select Market order" — and have no real failure detection today (step 2's click loop silently swallows failures via `except: pass`). Every step should verify it actually succeeded and abort the whole trade attempt if not, instead of continuing on to type into a panel that may not be in the expected state.
+- **Automatic Tradovate connection**: log into/select the right broker connection as part of the flow instead of requiring it to already be active manually. Needs support for *multiple* Tradovate username/password pairs in `.env`/`setup_wizard.py`, plus a heuristic for choosing which account to use for a given trade (not yet defined).
+- **Separate TradingView / TradingGenerator / app-config concerns architecturally**: `trading.py`+`panel.py` (TradingView) and `signal_source.py`+`login.py` (TradingGenerator) are reasonably separated today, but not through a real interface/boundary. If TradingGenerator changes its UI or trade-parameter format, ideally only its module needs to change, with the rest of the app (config, TradingView execution, orchestration) untouched. Worth revisiting the module boundaries with this in mind before the codebase grows further.
 
 ## Repository docs
 
