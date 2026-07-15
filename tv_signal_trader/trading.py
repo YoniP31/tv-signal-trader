@@ -94,8 +94,7 @@ def place_order(driver, tp_ticks=150, sl_ticks=150, side="buy", units=1):
                 humanize.pause(0.3, 0.7)
                 driver.execute_script("arguments[0].click();", b)
                 humanize.long_pause(1.5, 3.0)
-                driver.save_screenshot(f"after_{side}.png")
-                print(f"  Done! after_{side}.png saved")
+                print("  Done!")
                 clicked = True
                 break
         except Exception:

@@ -44,7 +44,7 @@ This is the core trading action. It drives TradingView's order panel (the right-
 4. Expands the **Exits** section (if collapsed) to reveal the Take Profit/Stop Loss controls.
 5. Turns on the **Take Profit** and **Stop Loss** toggles.
 6. Makes sure each of the TP/SL bracket dropdowns (`order-ticket-take-profit-dropdown-button` / `order-ticket-stop-loss-dropdown-button`) is set to **Ticks** — since individual menu options aren't uniquely identifiable, "Ticks" is selected positionally (it's always the 2nd item in the menu) — then types `tp_ticks` / `sl_ticks` directly into the `order-ticket-take-profit-input` / `order-ticket-stop-loss-input` fields.
-7. Clicks the final **Buy**/**Sell** confirm button and saves a screenshot (`after_buy.png` / `after_sell.png`).
+7. Clicks the final **Buy**/**Sell** confirm button.
 
 All typing is done character-by-character with randomized delays (`type_humanlike`), and most steps have randomized pauses between them, to look more like a human user than a script.
 
