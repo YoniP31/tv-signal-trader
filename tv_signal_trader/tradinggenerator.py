@@ -196,9 +196,10 @@ def report_trade_result(driver, outcome):
     tab. `outcome` is one of 'tp', 'sl', 'not_taken'."""
     label = RESULT_BUTTON_LABELS[outcome]
     for btn in driver.find_elements(By.TAG_NAME, "button"):
-        if btn.text.strip().lower().startswith(label):
+        text = btn.text.strip()
+        if text.lower().startswith(label):
             btn.click()
-            print(f"  Reported result: '{btn.text.strip()}' [OK]")
+            print(f"  Reported result: '{text}' [OK]")
             return True
     print(f"  WARNING: could not find a '{label}' result button")
     return False
