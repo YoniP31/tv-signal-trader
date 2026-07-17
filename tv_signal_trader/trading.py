@@ -8,6 +8,226 @@ from . import humanize
 from . import panel
 
 
+def _find_trade_button(driver):
+    """Returns the visible top-toolbar Trade button element, or None.
+    TradingView renders this button multiple times (hidden duplicates used
+    for responsive-layout measurement), so this picks whichever copy is
+    actually visible rather than assuming DOM order."""
+    return driver.execute_script("""
+        var all = document.querySelectorAll('[data-qa-id="trade-button"]');
+        for (var i = 0; i < all.length; i++) {
+            var el = all[i];
+            var style = window.getComputedStyle(el);
+            if (style.display === 'none' || style.visibility === 'hidden') continue;
+            var rect = el.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) continue;
+            return el;
+        }
+        return null;
+    """)
+
+
+def is_tradovate_connected(driver):
+    """Checks the bottom broker panel's Tradovate tab button, via its nested
+    data-status attribute. That button only exists in the DOM at all once a
+    broker is actually connected -- the top-toolbar Trade button was tried
+    first, but its text stays "Trade" either way; only a small icon next to
+    it changes, which isn't something worth relying on.
+
+    Returns True/False -- the button's absence is itself a reliable "not
+    connected" signal here, not an error, so unlike other checks in this
+    module this doesn't return None for "couldn't determine".
+    """
+    try:
+        status_el = driver.find_element(By.CSS_SELECTOR, '[data-qa-id="paper_trading"] [data-status]')
+    except Exception:
+        print("  Broker tab not found (not connected)")
+        return False
+    status = status_el.get_attribute("data-status")
+    print(f"  Broker tab status: '{status}'")
+    return status == "connected"
+
+
+def _wait_for_new_tab(driver, existing_tabs, timeout=10):
+    """Polls until a tab not in `existing_tabs` appears, returning its
+    handle, or None on timeout."""
+    elapsed = 0.0
+    while elapsed < timeout:
+        new_tabs = set(driver.window_handles) - existing_tabs
+        if new_tabs:
+            return next(iter(new_tabs))
+        time.sleep(0.5)
+        elapsed += 0.5
+    return None
+
+
+def _wait_for_tab_to_close(driver, tab_handle, timeout=15):
+    """Polls until `tab_handle` is no longer in the open window list."""
+    elapsed = 0.0
+    while elapsed < timeout:
+        if tab_handle not in driver.window_handles:
+            return True
+        time.sleep(0.5)
+        elapsed += 0.5
+    return False
+
+
+def _submit_tradovate_login(driver, username, password):
+    """Fills and submits Tradovate's own login form -- a separate site
+    (trader.tradovate.com) opened in a new tab by the Connect flow, not
+    part of TradingView itself."""
+    try:
+        username_inp = driver.find_element(By.ID, "name-input")
+        password_inp = driver.find_element(By.ID, "password-input")
+    except Exception:
+        print("  Tradovate login fields not found")
+        return False
+
+    panel.set_field(driver, username_inp, username)
+    panel.set_field(driver, password_inp, password)
+
+    for b in driver.find_elements(By.TAG_NAME, "button"):
+        try:
+            if b.is_displayed() and b.text.strip() == "Login":
+                driver.execute_script("arguments[0].click();", b)
+                return True
+        except Exception:
+            continue
+    print("  Tradovate Login button not found")
+    return False
+
+
+def connect_tradovate(driver, username, password, timeout=15):
+    """Opens the broker-connection flow, logs into Tradovate with the given
+    credentials, and confirms the connection actually took.
+
+    Takes credentials as plain arguments rather than reading them from
+    config itself -- how they get stored (multiple accounts, etc.) isn't
+    decided yet, so this stays agnostic to that and just uses whatever the
+    caller hands it.
+
+    Deliberately does not touch the broker-selection dialog's Live/Demo
+    toggle -- picking the wrong one could connect a different account/mode
+    than intended, so that choice is left at whatever TradingView already
+    has pre-selected (its own remembered state) rather than guessed at here.
+    """
+    if is_tradovate_connected(driver):
+        print("  Already connected to Tradovate [OK]")
+        return True
+
+    tv_tab = driver.current_window_handle
+    tabs_before = set(driver.window_handles)
+
+    trade_button = _find_trade_button(driver)
+    if trade_button is None:
+        print("  FAILED: Trade button not found.")
+        return False
+    driver.execute_script("arguments[0].click();", trade_button)
+    humanize.long_pause(1.0, 1.5)
+
+    try:
+        tile = driver.find_element(By.CSS_SELECTOR, '[data-broker="TRADOVATE"]')
+    except Exception:
+        print("  FAILED: Tradovate broker tile not found.")
+        return False
+    driver.execute_script("arguments[0].click();", tile)
+    humanize.long_pause(1.0, 1.5)
+
+    clicked = False
+    for b in driver.find_elements(By.TAG_NAME, "button"):
+        try:
+            if b.is_displayed() and b.text.strip() == "Connect":
+                driver.execute_script("arguments[0].click();", b)
+                clicked = True
+                break
+        except Exception:
+            continue
+    if not clicked:
+        print("  FAILED: Connect button not found.")
+        return False
+
+    # Clicking Connect opens Tradovate's own login page in a new tab.
+    print("  Waiting for the Tradovate login tab...")
+    login_tab = _wait_for_new_tab(driver, tabs_before, timeout=10)
+    if login_tab is None:
+        print("  FAILED: Tradovate login tab never opened.")
+        return False
+
+    driver.switch_to.window(login_tab)
+    humanize.long_pause(1.0, 2.0)
+
+    if not _submit_tradovate_login(driver, username, password):
+        print("  FAILED: could not submit Tradovate login form.")
+        try:
+            driver.switch_to.window(tv_tab)
+        except Exception:
+            pass
+        return False
+
+    # On success the login tab closes itself and focus is expected to
+    # return to TradingView -- but that's not guaranteed, so wait for it to
+    # actually close and switch back explicitly rather than assume it did.
+    print("  Waiting for the login tab to close...")
+    if not _wait_for_tab_to_close(driver, login_tab, timeout=15):
+        print("  FAILED: Tradovate login tab never closed - login may have failed.")
+        try:
+            driver.switch_to.window(tv_tab)
+        except Exception:
+            pass
+        return False
+
+    driver.switch_to.window(tv_tab)
+    humanize.long_pause(1.0, 2.0)
+
+    # The connect flow may take a moment to reflect in the UI, so poll
+    # rather than assume it worked immediately.
+    elapsed = 0
+    while elapsed < timeout:
+        if is_tradovate_connected(driver):
+            print("  Connected to Tradovate [OK]")
+            return True
+        time.sleep(1)
+        elapsed += 1
+    print("  FAILED: could not confirm connection after logging in.")
+    return False
+
+
+def disconnect_tradovate(driver, timeout=15):
+    """Logs out of the currently connected Tradovate broker via the
+    trade-dropdown menu's 'Log out' item."""
+    if not is_tradovate_connected(driver):
+        print("  Already disconnected from Tradovate [OK]")
+        return True
+
+    try:
+        dropdown_button = driver.find_element(By.CSS_SELECTOR, '[data-qa-id="trade-dropdown-button"]')
+    except Exception:
+        print("  FAILED: trade-dropdown-button not found.")
+        return False
+    driver.execute_script("arguments[0].click();", dropdown_button)
+    humanize.long_pause(0.6, 1.0)
+
+    try:
+        logout_item = driver.find_element(By.CSS_SELECTOR, '[data-qa-id="trade-dropdown-item-log-out"]')
+    except Exception:
+        print("  FAILED: 'Log out' menu item not found.")
+        return False
+    driver.execute_script("arguments[0].click();", logout_item)
+    humanize.long_pause(1.0, 2.0)
+
+    # Logging out may take a moment to reflect in the UI, so poll rather
+    # than assume it worked immediately.
+    elapsed = 0
+    while elapsed < timeout:
+        if not is_tradovate_connected(driver):
+            print("  Disconnected from Tradovate [OK]")
+            return True
+        time.sleep(1)
+        elapsed += 1
+    print("  FAILED: could not confirm disconnection after clicking Log out.")
+    return False
+
+
 def resolve_symbol(asset, contract_size):
     """Maps a TradingGenerator asset/size to a TradingView continuous-futures
     ticker, e.g. ("NQ", "MINI") -> "MNQ1!". "1!" is TradingView's standard
