@@ -19,22 +19,35 @@ def set_field(driver, input_el, value):
     humanize.pause(0.3, 0.6)
 
 
-def enable_tp_sl_toggles(driver):
-    print("  Enabling TP/SL toggles...")
+TP_TOGGLE_QA_ID = "order-ticket-take-profit-checkbox-bracket"
+SL_TOGGLE_QA_ID = "order-ticket-stop-loss-checkbox-bracket"
+
+
+def _ensure_toggle_checked(driver, qa_id):
     try:
-        driver.execute_script("""
-            var toggles = document.querySelectorAll('[role="switch"]');
-            for (var i = 0; i < toggles.length; i++) {
-                var t = toggles[i];
-                if (!t.offsetParent) continue;
-                var rect = t.getBoundingClientRect();
-                if (rect.x < 1050) continue;
-                if (t.getAttribute('aria-checked') === 'false') t.click();
-            }
-        """)
-        humanize.pause(0.6, 1.0)
+        toggle = driver.find_element(By.CSS_SELECTOR, f'[data-qa-id="{qa_id}"]')
     except Exception:
-        pass
+        print(f"  {qa_id} not found")
+        return False
+
+    if toggle.get_attribute("aria-checked") != "true":
+        driver.execute_script("arguments[0].click();", toggle)
+        humanize.pause(0.4, 0.8)
+
+    if toggle.get_attribute("aria-checked") != "true":
+        print(f"  {qa_id} still not checked after click")
+        return False
+    return True
+
+
+def enable_tp_sl_toggles(driver):
+    """Turns on the Take Profit / Stop Loss enable switches (identified by
+    their own data-qa-id) if they're off, then verifies each ended up
+    checked. Returns True only if both are confirmed on."""
+    print("  Enabling TP/SL toggles...")
+    tp_ok = _ensure_toggle_checked(driver, TP_TOGGLE_QA_ID)
+    sl_ok = _ensure_toggle_checked(driver, SL_TOGGLE_QA_ID)
+    return tp_ok and sl_ok
 
 
 def ensure_ticks_mode(driver, button_qa_id, label_name):
@@ -64,7 +77,12 @@ def ensure_ticks_mode(driver, button_qa_id, label_name):
         clicked = driver.execute_script("""
             var items = Array.prototype.slice.call(
                 document.querySelectorAll('[data-is-popover-item-button="true"]')
-            ).filter(function(el) { return el.offsetParent; });
+            ).filter(function(el) {
+                var style = window.getComputedStyle(el);
+                if (style.display === 'none' || style.visibility === 'hidden') return false;
+                var rect = el.getBoundingClientRect();
+                return rect.width > 0 && rect.height > 0;
+            });
             items.sort(function(a, b) {
                 return a.getBoundingClientRect().top - b.getBoundingClientRect().top;
             });
@@ -106,40 +124,48 @@ def ensure_units_mode(driver):
         return False
 
 
+def is_order_ticket_open(driver, attempts=3):
+    """True if the order ticket panel is actually open, checked via the
+    quantity field, which only exists once it's rendered. Retries briefly
+    to absorb render timing, not because we expect it to appear late."""
+    for _ in range(attempts):
+        try:
+            if driver.find_element(By.ID, "quantity-field").is_displayed():
+                return True
+        except Exception:
+            pass
+        humanize.pause(0.5, 1.0)
+    return False
+
+
+def click_market_tab(driver):
+    """Clicks the 'Market' order-type tab. Returns the button element if a
+    visible, exact-text 'Market' button was actually found and clicked, or
+    None if it wasn't -- the caller decides that's fatal, not this function
+    silently doing nothing."""
+    for b in driver.find_elements(By.TAG_NAME, "button"):
+        try:
+            if b.text.strip() == "Market" and b.is_displayed():
+                driver.execute_script("arguments[0].click();", b)
+                return b
+        except Exception:
+            continue
+    return None
+
+
 def ensure_exits_expanded(driver):
-    """Clicks the 'Exits' section header to reveal the TP/SL controls, if
-    they aren't already visible."""
-    if find_label_y(driver, "take profit", quiet=True) is not None:
+    """Makes sure the Exits (TP/SL) section is expanded, via the
+    'hide-brackets-button' toggle's own aria-expanded attribute -- no text
+    matching or position heuristics needed."""
+    try:
+        button = driver.find_element(By.CSS_SELECTOR, '[data-qa-id="hide-brackets-button"]')
+    except Exception:
+        print("  Exits section toggle button not found")
+        return False
+
+    if button.get_attribute("aria-expanded") == "true":
         return True
-    clicked = driver.execute_script("""
-        var all = document.querySelectorAll('button, div, span');
-        for (var i = 0; i < all.length; i++) {
-            var el = all[i];
-            if (!el.offsetParent) continue;
-            var rect = el.getBoundingClientRect();
-            if (rect.x < 1050) continue;
-            if ((el.innerText || '').trim() === 'Exits') { el.click(); return true; }
-        }
-        return false;
-    """)
+
+    driver.execute_script("arguments[0].click();", button)
     humanize.pause(0.6, 1.0)
-    return clicked
-
-
-def find_label_y(driver, label_text, quiet=False):
-    result = driver.execute_script("""
-        var target = arguments[0].toLowerCase();
-        var all = document.querySelectorAll('span, div, label');
-        for (var i = 0; i < all.length; i++) {
-            var el = all[i];
-            if (!el.offsetParent) continue;
-            var rect = el.getBoundingClientRect();
-            if (rect.x < 1050) continue;
-            var txt = (el.innerText || el.textContent || '').trim().toLowerCase();
-            if (txt.startsWith(target)) return rect.y;
-        }
-        return null;
-    """, label_text)
-    if not quiet:
-        print(f"  '{label_text}' label y={result}")
-    return result
+    return button.get_attribute("aria-expanded") == "true"
