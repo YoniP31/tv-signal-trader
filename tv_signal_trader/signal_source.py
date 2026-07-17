@@ -1,3 +1,4 @@
+from . import config
 from . import humanize
 from . import status
 from . import trading
@@ -52,6 +53,16 @@ def run_web_loop(driver):
 
             driver.switch_to.window(tv_tab)
             trading.load_chart_for_signal(driver, params['asset'], params['contract_size'])
+
+            if not trading.is_tradovate_connected(driver):
+                print("  Tradovate not connected - attempting to connect...")
+                if not trading.connect_tradovate(
+                    driver, config.TRADOVATE_USERNAME, config.TRADOVATE_PASSWORD
+                ):
+                    print("  [FAIL] Could not connect to Tradovate - stopping loop.")
+                    driver.switch_to.window(web_tab)
+                    tg.report_trade_result(driver, 'not_taken')
+                    return
 
             print(f"\n  Executing: {direction.upper()} | TP={params['tp_ticks']} ticks | "
                   f"SL={params['sl_ticks']} ticks | contracts={params['contracts']}")

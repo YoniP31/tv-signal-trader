@@ -75,9 +75,14 @@ def set_env_values(values):
 
 def _reload_env():
     global _env, TRADINGGENERATOR_USERNAME, TRADINGGENERATOR_PASSWORD
+    global TRADOVATE_USERNAME, TRADOVATE_PASSWORD
     _env = _load_env_file(ENV_FILE)
     TRADINGGENERATOR_USERNAME = _env.get("TRADINGGENERATOR_USERNAME", "")
     TRADINGGENERATOR_PASSWORD = _env.get("TRADINGGENERATOR_PASSWORD", "")
+    # Single account for now -- see README "Planned work" for multi-account
+    # support (would need a stored list plus a selection heuristic).
+    TRADOVATE_USERNAME = _env.get("TRADOVATE_USERNAME", "")
+    TRADOVATE_PASSWORD = _env.get("TRADOVATE_PASSWORD", "")
 
 
 _reload_env()

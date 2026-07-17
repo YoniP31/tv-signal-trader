@@ -29,7 +29,8 @@ def main():
 
         login_monitor.start()
 
-        print("\nCommands: 'web', 'buy', 'sell', 'setup', 'quit'")
+        print("\nCommands: 'web', 'buy', 'sell', 'connect_tradovate'," \
+        " 'disconnect_tradovate', 'setup', 'quit'")
         while True:
             cmd = input("> ").strip().lower()
             with state.session.driver_lock:
@@ -39,6 +40,12 @@ def main():
                     trading.place_order(driver, tp_ticks=150, sl_ticks=150, side="buy")
                 elif cmd == "sell":
                     trading.place_order(driver, tp_ticks=150, sl_ticks=150, side="sell")
+                elif cmd == "connect_tradovate":
+                    # Temporary manual-test command for trading.connect_tradovate().
+                    trading.connect_tradovate(driver, config.TRADOVATE_USERNAME, config.TRADOVATE_PASSWORD)
+                elif cmd == "disconnect_tradovate":
+                    # Temporary manual-test command for trading.disconnect_tradovate().
+                    trading.disconnect_tradovate(driver)
                 elif cmd == "setup":
                     setup_wizard.run_setup()
                 elif cmd == "quit":
