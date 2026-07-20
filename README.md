@@ -91,7 +91,7 @@ Running the script drops you into a `>` prompt that accepts:
    python main.py
    ```
 
-4. On first run you'll be walked through setup in the terminal for anything missing: your TradingGenerator username/password. This gets saved to a local `.env` file so you're only asked once — type `setup` at the `>` prompt anytime to change it. (No chromedriver download needed — Selenium Manager fetches it automatically the first time Chrome launches.)
+4. On first run you'll be walked through setup in the terminal for anything missing: your TradingGenerator username/password, then at least one Tradovate account (pick a prop firm from a fixed list, enter its username/password — one account per firm). This gets saved to a local `.env` file so you're only asked once — type `setup` at the `>` prompt anytime to add more accounts or change existing values. (No chromedriver download needed — Selenium Manager fetches it automatically the first time Chrome launches.)
 5. Chrome then opens to the chart — log into TradingView (and make sure the intended Tradovate/broker connection is active) in that window. The session persists in the `tv_profile` folder for future runs; TradingView itself isn't part of the `.env`/setup flow since it relies on that persistent cookie-based session, not password auto-fill.
 6. Type a command at the `>` prompt (see table above).
 

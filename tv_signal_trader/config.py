@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 
 try:
@@ -30,8 +31,31 @@ LOGIN_POLL_INTERVAL_SECONDS = 15
 TRADE_CLOSE_POLL_INTERVAL_SECONDS = 20
 TRADE_CLOSE_TIMEOUT_SECONDS = 24 * 60 * 60
 
+# Starter list of well-known futures prop firms -- easy to extend, this is
+# just what's popular at time of writing. One Tradovate account per firm.
+PROP_FIRMS = [
+    "Apex Trader Funding",
+    "TopStep",
+    "Tradeify",
+    "MyFundedFutures",
+    "Take Profit Trader",
+    "Bulenox",
+    "Elite Trader Funding",
+    "Leeloo Trading",
+]
+
 
 ENV_FILE = os.path.join(APP_DIR, ".env")
+
+
+def tradovate_env_key(company, field):
+    """e.g. ('Apex Trader Funding', 'username') -> 'TRADOVATE_APEX_TRADER_FUNDING_USERNAME'"""
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", company).strip("_").upper()
+    return f"TRADOVATE_{slug}_{field.upper()}"
+
+
+def get_env_value(key, default=""):
+    return _env.get(key, default)
 
 
 def _load_env_file(path):
@@ -75,14 +99,19 @@ def set_env_values(values):
 
 def _reload_env():
     global _env, TRADINGGENERATOR_USERNAME, TRADINGGENERATOR_PASSWORD
-    global TRADOVATE_USERNAME, TRADOVATE_PASSWORD
+    global TRADOVATE_ACCOUNTS
     _env = _load_env_file(ENV_FILE)
     TRADINGGENERATOR_USERNAME = _env.get("TRADINGGENERATOR_USERNAME", "")
     TRADINGGENERATOR_PASSWORD = _env.get("TRADINGGENERATOR_PASSWORD", "")
-    # Single account for now -- see README "Planned work" for multi-account
-    # support (would need a stored list plus a selection heuristic).
-    TRADOVATE_USERNAME = _env.get("TRADOVATE_USERNAME", "")
-    TRADOVATE_PASSWORD = _env.get("TRADOVATE_PASSWORD", "")
+    # One Tradovate account per prop firm. Only firms with both a username
+    # and password saved show up here -- see README "Planned work" for the
+    # still-missing piece: picking the right account for a given trade.
+    TRADOVATE_ACCOUNTS = {}
+    for company in PROP_FIRMS:
+        username = _env.get(tradovate_env_key(company, "username"), "")
+        password = _env.get(tradovate_env_key(company, "password"), "")
+        if username and password:
+            TRADOVATE_ACCOUNTS[company] = {"username": username, "password": password}
 
 
 _reload_env()

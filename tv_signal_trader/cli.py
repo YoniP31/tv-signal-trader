@@ -42,7 +42,13 @@ def main():
                     trading.place_order(driver, tp_ticks=150, sl_ticks=150, side="sell")
                 elif cmd == "connect_tradovate":
                     # Temporary manual-test command for trading.connect_tradovate().
-                    trading.connect_tradovate(driver, config.TRADOVATE_USERNAME, config.TRADOVATE_PASSWORD)
+                    # Uses the sole configured account -- see signal_source._pick_tradovate_account.
+                    if len(config.TRADOVATE_ACCOUNTS) == 1:
+                        account = next(iter(config.TRADOVATE_ACCOUNTS.values()))
+                        trading.connect_tradovate(driver, account['username'], account['password'])
+                    else:
+                        print(f"[FAIL] {len(config.TRADOVATE_ACCOUNTS)} accounts configured, "
+                              "need exactly 1 for this test command.")
                 elif cmd == "disconnect_tradovate":
                     # Temporary manual-test command for trading.disconnect_tradovate().
                     trading.disconnect_tradovate(driver)
