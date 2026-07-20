@@ -228,6 +228,71 @@ def disconnect_tradovate(driver, timeout=15):
     return False
 
 
+def select_tradovate_account(driver, account_name, timeout=10):
+    """Selects `account_name` (e.g. "APEX1871970000006") in the broker
+    panel's account-selector dropdown -- the specific Tradovate sub-account
+    the next trade should be placed against, distinct from which company's
+    Tradovate *login* is connected (see connect_tradovate). A single login
+    can have several sub-accounts (e.g. multiple eval accounts).
+
+    No-ops (returns True) if that account is already selected. Matches the
+    dropdown item by TradingView's stable data-qa-id="account-name-N"
+    attribute rather than its CSS-module class names, which look
+    build-specific and liable to change across TradingView releases.
+    """
+    if not account_name:
+        return True
+    if not _ensure_broker_panel_open(driver):
+        print("  FAILED: could not open the broker panel to select an account.")
+        return False
+
+    try:
+        selector_btn = driver.find_element(By.CSS_SELECTOR, '[data-qa-id="account-selector"]')
+    except Exception:
+        print("  FAILED: account-selector button not found.")
+        return False
+
+    if account_name in selector_btn.text:
+        print(f"  Tradovate account already set to '{account_name}' [OK]")
+        return True
+
+    driver.execute_script("arguments[0].click();", selector_btn)
+    humanize.long_pause(0.6, 1.0)
+
+    try:
+        dropdown = driver.find_element(By.CSS_SELECTOR, '[data-qa-id="account-dropdown"]')
+    except Exception:
+        print("  FAILED: account-dropdown list did not open.")
+        return False
+
+    item = None
+    for name_el in dropdown.find_elements(By.CSS_SELECTOR, '[data-qa-id^="account-name-"]'):
+        if name_el.text.strip() == account_name:
+            item = name_el
+            break
+    if item is None:
+        print(f"  FAILED: Tradovate account '{account_name}' not found in the dropdown.")
+        return False
+
+    clickable = item.find_element(By.XPATH, './ancestor::div[@data-is-popover-item-button="true"][1]')
+    driver.execute_script("arguments[0].click();", clickable)
+    humanize.long_pause(0.6, 1.0)
+
+    elapsed = 0
+    while elapsed < timeout:
+        try:
+            selector_btn = driver.find_element(By.CSS_SELECTOR, '[data-qa-id="account-selector"]')
+            if account_name in selector_btn.text:
+                print(f"  Switched Tradovate account to '{account_name}' [OK]")
+                return True
+        except Exception:
+            pass
+        time.sleep(0.5)
+        elapsed += 0.5
+    print(f"  FAILED: could not confirm switch to Tradovate account '{account_name}'.")
+    return False
+
+
 def resolve_symbol(asset, contract_size):
     """Maps a TradingGenerator asset/size to a TradingView continuous-futures
     ticker, e.g. ("NQ", "MINI") -> "MNQ1!". "1!" is TradingView's standard

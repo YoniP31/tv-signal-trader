@@ -60,7 +60,7 @@ def run_web_loop(driver):
             print(f"  Take Profit: {params['tp_ticks']} ticks")
 
             direction = {'LONG': 'buy', 'SHORT': 'sell'}.get(params['direction'])
-            missing = [k for k in ('asset', 'contracts', 'sl_ticks', 'tp_ticks', 'company') if params[k] is None]
+            missing = [k for k in ('asset', 'contracts', 'sl_ticks', 'tp_ticks', 'company', 'portfolio') if params[k] is None]
             if direction is None:
                 missing.append('direction')
             if missing:
@@ -93,6 +93,12 @@ def run_web_loop(driver):
                     tg.report_trade_result(driver, 'not_taken')
                     return
                 connected_company = company
+
+            if not trading.select_tradovate_account(driver, params['portfolio']):
+                print("  [FAIL] Could not select the correct Tradovate account - stopping loop.")
+                driver.switch_to.window(web_tab)
+                tg.report_trade_result(driver, 'not_taken')
+                return
 
             print(f"\n  Executing: {direction.upper()} | TP={params['tp_ticks']} ticks | "
                   f"SL={params['sl_ticks']} ticks | contracts={params['contracts']}")
