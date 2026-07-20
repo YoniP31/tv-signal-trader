@@ -81,7 +81,9 @@ def run_web_loop(driver):
     own once back inside it (today's window if we're early, tomorrow's if
     today's already closed) -- checked only between trades, so a trade
     already open when the window closes still runs through wait_for_close
-    normally rather than being cut off mid-position.
+    normally rather than being cut off mid-position. Saves a TradingGenerator
+    backup (tradinggenerator.save_backup) once per day, right as the session
+    closes.
     """
     print("\n[WEB] Starting automatic trading loop (Ctrl+C to stop)...")
     tv_tab = driver.current_window_handle
@@ -90,6 +92,7 @@ def run_web_loop(driver):
     next_portfolio = None
     unavailable = set()
     consecutive_failures = 0
+    last_backup_date = None
     try:
         web_tab = tg.open_tab(driver, tv_tab)
         print("  TradingGenerator tab ready [OK]")
@@ -97,7 +100,19 @@ def run_web_loop(driver):
         while True:
             session_status, session_wait = config.session_window_status()
             if session_status == 'waiting':
-                resume_at = config.now_in_israel() + datetime.timedelta(seconds=session_wait)
+                now = config.now_in_israel()
+                # Only the "session just ended" case, not "hasn't started
+                # yet" -- and only once per day, since we'll sit in this
+                # branch's sleep for hours and re-enter it right at the
+                # boundary otherwise.
+                if (config.SESSION_END_TIME and now.time() > config.SESSION_END_TIME
+                        and last_backup_date != now.date()):
+                    print("  Trading session ended for today - saving a TradingGenerator backup...")
+                    driver.switch_to.window(web_tab)
+                    tg.save_backup(driver)
+                    last_backup_date = now.date()
+
+                resume_at = now + datetime.timedelta(seconds=session_wait)
                 print(f"  Outside the trading session - waiting until "
                       f"{resume_at.strftime('%Y-%m-%d %H:%M')} Israel time ({int(session_wait)}s)...")
                 time.sleep(session_wait)

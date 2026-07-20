@@ -14,6 +14,17 @@ def build_options():
     options.add_argument("--disable-background-networking")
     options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
     options.add_experimental_option("useAutomationExtension", False)
+    # TradingGenerator's "Save Backup" button downloads a .json file -- if
+    # Chrome's set to ask where to save each download, that'd be a native
+    # OS dialog Selenium can't see or dismiss, silently stalling the
+    # backup. This forces the profile to always download automatically,
+    # landing next to .env/status.json rather than wherever Chrome's
+    # default download folder happens to be.
+    options.add_experimental_option("prefs", {
+        "download.prompt_for_download": False,
+        "download.default_directory": config.APP_DIR,
+        "download.directory_upgrade": True,
+    })
     options.add_argument("user-agent=" + config.USER_AGENT)
     return options
 

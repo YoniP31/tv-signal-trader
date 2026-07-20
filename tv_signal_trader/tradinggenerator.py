@@ -455,3 +455,18 @@ def report_trade_result(driver, outcome):
             return True
     print(f"  WARNING: could not find a '{label}' result button")
     return False
+
+
+def save_backup(driver):
+    """Clicks TradingGenerator's "Save Backup" button (.backup-btn-save),
+    which downloads a .json backup of its current state -- run once the
+    trading session ends for the day."""
+    try:
+        btn = driver.find_element(By.CSS_SELECTOR, ".backup-btn-save")
+    except Exception:
+        print("  [WARN] Save Backup button not found.")
+        return False
+    btn.click()
+    humanize.long_pause(1, 2)
+    print("  TradingGenerator backup saved [OK]")
+    return True
