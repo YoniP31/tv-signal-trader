@@ -150,6 +150,44 @@ def select_portfolio(driver, portfolio):
     return False
 
 
+def _confirm_delete_portfolio(driver, attempts=6):
+    """Clicks the 'Delete' confirm button on the "Delete Portfolio" warning
+    modal that pops up after clicking a portfolio tab's delete 'X'."""
+    for _ in range(attempts):
+        for btn in driver.find_elements(By.CSS_SELECTOR, ".modal-confirm"):
+            if btn.is_displayed():
+                btn.click()
+                humanize.long_pause(1, 2)
+                return True
+        humanize.pause(0.4, 0.7)
+    return False
+
+
+def remove_portfolio(driver, portfolio):
+    """Clicks the 'X' (.tab-delete) on the #portfolioBar tab matching
+    `portfolio` by name, then confirms the "Delete Portfolio" warning modal
+    that pops up -- removing it from TradingGenerator, e.g. once its
+    account has blown past its loss limit or hit its profit target and
+    shouldn't be traded anymore. Returns True if found, clicked, and
+    confirmed."""
+    for tab in driver.find_elements(By.CSS_SELECTOR, "#portfolioBar .portfolio-tab"):
+        if _tab_name(tab) == portfolio:
+            try:
+                delete_btn = tab.find_element(By.CSS_SELECTOR, ".tab-delete")
+            except Exception:
+                print(f"  [WARN] Portfolio '{portfolio}' has no delete button.")
+                return False
+            delete_btn.click()
+            humanize.long_pause(1, 2)
+            if not _confirm_delete_portfolio(driver):
+                print(f"  [WARN] Delete confirmation modal for '{portfolio}' not found.")
+                return False
+            print(f"  Removed portfolio '{portfolio}' from TradingGenerator [OK]")
+            return True
+    print(f"  [WARN] Portfolio '{portfolio}' not found to remove.")
+    return False
+
+
 def _read_wrong_account_warning(driver):
     """If TradingGenerator's "wrong account" warning modal is showing (you
     tried to generate a trade for the wrong company/portfolio), returns the

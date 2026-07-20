@@ -100,6 +100,20 @@ def run_web_loop(driver):
                 tg.report_trade_result(driver, 'not_taken')
                 return
 
+            # Belt-and-suspenders: the same balance check runs after every
+            # trade closes and should already have removed a violating
+            # account, but check again here too in case that removal ever
+            # failed -- opening a new trade on an already-blown/maxed-out
+            # account is worse than a redundant check.
+            if trading.account_needs_removal(driver):
+                print(f"  [WARN] Account balance already outside its allowed range - "
+                      f"removing '{params['portfolio']}' instead of trading.")
+                driver.switch_to.window(web_tab)
+                tg.report_trade_result(driver, 'not_taken')
+                tg.remove_portfolio(driver, params['portfolio'])
+                humanize.long_pause(2, 3)
+                continue
+
             print(f"\n  Executing: {direction.upper()} | TP={params['tp_ticks']} ticks | "
                   f"SL={params['sl_ticks']} ticks | contracts={params['contracts']}")
             entered = trading.place_order(
@@ -123,8 +137,18 @@ def run_web_loop(driver):
                       "TradingGenerator.")
                 return
 
+            # Right after close is the one moment we're certain which account
+            # is active and that no position is open, so it's the trustworthy
+            # time to check whether this account has blown past its loss
+            # limit or hit its profit target and needs pulling out of rotation.
+            needs_removal = trading.account_needs_removal(driver)
+
             driver.switch_to.window(web_tab)
             tg.report_trade_result(driver, close_outcome)
+
+            if needs_removal:
+                tg.remove_portfolio(driver, params['portfolio'])
+
             humanize.long_pause(2, 3)
 
     except Exception as e:

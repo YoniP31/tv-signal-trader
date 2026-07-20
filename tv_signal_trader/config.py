@@ -44,6 +44,18 @@ PROP_FIRMS = [
     "Leeloo Trading",
 ]
 
+# Default $ balance range per standard prop-firm account size. There's no
+# way to read which size an account actually is from the page, so
+# trading.account_needs_removal() guesses by picking whichever size here the
+# current balance is numerically closest to -- safe since the real ranges
+# are far apart (a 50K account is never anywhere near a 25K account's ~$27K
+# ceiling). Override any of these via .env once real per-size numbers are
+# confirmed; these are placeholders.
+_DEFAULT_ACCOUNT_TIER_RANGES = {
+    25000: (23000, 27000),
+    50000: (47500, 53000),
+}
+
 
 ENV_FILE = os.path.join(APP_DIR, ".env")
 
@@ -99,7 +111,7 @@ def set_env_values(values):
 
 def _reload_env():
     global _env, TRADINGGENERATOR_USERNAME, TRADINGGENERATOR_PASSWORD
-    global TRADOVATE_ACCOUNTS
+    global TRADOVATE_ACCOUNTS, ACCOUNT_BALANCE_TIERS
     _env = _load_env_file(ENV_FILE)
     TRADINGGENERATOR_USERNAME = _env.get("TRADINGGENERATOR_USERNAME", "")
     TRADINGGENERATOR_PASSWORD = _env.get("TRADINGGENERATOR_PASSWORD", "")
@@ -112,6 +124,13 @@ def _reload_env():
         password = _env.get(tradovate_env_key(company, "password"), "")
         if username and password:
             TRADOVATE_ACCOUNTS[company] = {"username": username, "password": password}
+
+    ACCOUNT_BALANCE_TIERS = {}
+    for size, (default_min, default_max) in _DEFAULT_ACCOUNT_TIER_RANGES.items():
+        prefix = f"ACCOUNT_{size // 1000}K"
+        min_val = float(_env.get(f"{prefix}_MIN_BALANCE", default_min))
+        max_val = float(_env.get(f"{prefix}_MAX_BALANCE", default_max))
+        ACCOUNT_BALANCE_TIERS[size] = (min_val, max_val)
 
 
 _reload_env()

@@ -606,3 +606,63 @@ def wait_for_close(driver, timeout=None, poll_interval=None):
 
     print("  Timed out waiting for the position to close.")
     return None
+
+
+def read_account_balance(driver):
+    """Reads the broker panel's "Account Balance" value (e.g. 25040.84) for
+    the currently selected Tradovate account.
+
+    Matched by the "Account Balance" label text and DOM structure (the
+    title sits in a box whose next sibling holds the value) rather than
+    TradingView's class names on this element, which are CSS-module hashes
+    with no data-qa-id alternative available and look build-specific.
+    """
+    try:
+        value_el = driver.find_element(
+            By.XPATH,
+            '//span[normalize-space(text())="Account Balance"]/parent::div/following-sibling::div[1]'
+        )
+    except Exception:
+        print("  Could not find the Account Balance field.")
+        return None
+    try:
+        return float(value_el.text.strip().replace(',', ''))
+    except ValueError:
+        print(f"  Could not parse account balance from '{value_el.text}'.")
+        return None
+
+
+def account_needs_removal(driver, tiers=None):
+    """Reads the current account balance and checks whether it's crossed
+    outside its account-size tier's allowed range (e.g. below ~$47,500 or
+    above ~$53,000 for a $50K account) -- the account's blown-past-max-loss
+    or hit-profit-target point, at which it needs removing from
+    TradingGenerator.
+
+    There's no way to read which size (25K/50K/etc.) an account actually
+    is from the page, so this guesses by picking whichever tier's nominal
+    size (`tiers`' keys, in `config.ACCOUNT_BALANCE_TIERS` by default) the
+    balance is numerically closest to -- safe since the tiers' real ranges
+    are far apart (a 50K account is never anywhere near a 25K account's
+    ~$27K ceiling).
+
+    Call this right after a trade closes: that's the one moment we're
+    certain which account is active and that no position is open, so the
+    balance reading is trustworthy.
+
+    Returns True if the account is outside its tier's range (should be
+    removed), False if it's within range, None if the balance couldn't be
+    read.
+    """
+    tiers = tiers if tiers is not None else config.ACCOUNT_BALANCE_TIERS
+    balance = read_account_balance(driver)
+    if balance is None:
+        return None
+    nearest_size = min(tiers, key=lambda size: abs(balance - size))
+    min_threshold, max_threshold = tiers[nearest_size]
+    print(f"  Account balance: {balance:.2f} (closest tier: {nearest_size}, "
+          f"allowed range: {min_threshold:.2f} - {max_threshold:.2f})")
+    if balance <= min_threshold or balance >= max_threshold:
+        print(f"  [WARN] Account balance {balance:.2f} is outside its allowed range.")
+        return True
+    return False
