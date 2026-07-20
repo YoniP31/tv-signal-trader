@@ -1,3 +1,6 @@
+import datetime
+import time
+
 from . import config
 from . import humanize
 from . import status
@@ -9,6 +12,12 @@ from . import tradinggenerator as tg
 # just moving on to the next signal, so this bounds how many times in a row
 # that can happen before something is clearly systemically wrong.
 MAX_CONSECUTIVE_FAILURES = 5
+
+# How long to wait before re-checking when every known portfolio is
+# locked/unavailable -- there's no way to know exactly when one might free
+# up (a daily limit resetting, a human re-enabling something), so this just
+# polls at a low, non-disruptive pace rather than giving up for the day.
+PORTFOLIO_RETRY_INTERVAL_SECONDS = 60
 
 
 def _generate_next_trade(driver, next_company, next_portfolio, unavailable):
@@ -61,9 +70,18 @@ def run_web_loop(driver):
     """Repeatedly: generates a TradingGenerator signal, executes it on
     TradingView, waits for it to close, and reports the result back.
     Rotates through other companies/portfolios when the current one is
-    locked or otherwise unavailable, and only stops when nothing tradeable
-    is left, TradingGenerator login fails, or a trade's outcome genuinely
-    can't be determined. Stoppable with Ctrl+C at any point.
+    locked or otherwise unavailable; if *every* one currently is, it doesn't
+    give up -- it polls every PORTFOLIO_RETRY_INTERVAL_SECONDS in case one
+    frees up (a daily limit resetting, a portfolio being re-added). Only
+    stops for real when TradingGenerator login fails or a trade's outcome
+    genuinely can't be determined. Stoppable with Ctrl+C at any point.
+
+    Bounded by config.SESSION_START_TIME/SESSION_END_TIME (Israel time), if
+    set: pauses generating anything outside the window and resumes on its
+    own once back inside it (today's window if we're early, tomorrow's if
+    today's already closed) -- checked only between trades, so a trade
+    already open when the window closes still runs through wait_for_close
+    normally rather than being cut off mid-position.
     """
     print("\n[WEB] Starting automatic trading loop (Ctrl+C to stop)...")
     tv_tab = driver.current_window_handle
@@ -77,6 +95,14 @@ def run_web_loop(driver):
         print("  TradingGenerator tab ready [OK]")
 
         while True:
+            session_status, session_wait = config.session_window_status()
+            if session_status == 'waiting':
+                resume_at = config.now_in_israel() + datetime.timedelta(seconds=session_wait)
+                print(f"  Outside the trading session - waiting until "
+                      f"{resume_at.strftime('%Y-%m-%d %H:%M')} Israel time ({int(session_wait)}s)...")
+                time.sleep(session_wait)
+                continue
+
             driver.switch_to.window(web_tab)
 
             tg_logged_in = tg.ensure_logged_in(driver)
@@ -90,9 +116,15 @@ def run_web_loop(driver):
                 print("  [FAIL] Could not generate a trade - stopping loop.")
                 return
             if gen_outcome != 'generated':
-                print("  No tradeable portfolio available right now (all locked/unavailable) "
-                      "- stopping loop.")
-                return
+                print(f"  No tradeable portfolio available right now (all locked/unavailable) - "
+                      f"checking again in {PORTFOLIO_RETRY_INTERVAL_SECONDS}s...")
+                # Nothing's usable *right now*, but that can change (a daily
+                # limit resets, someone re-adds a portfolio) -- forget what
+                # we've ruled out and give everything a fresh look next time
+                # instead of blacklisting it for the rest of the run.
+                unavailable.clear()
+                time.sleep(PORTFOLIO_RETRY_INTERVAL_SECONDS)
+                continue
 
             humanize.long_pause(2, 3)
             missing = []

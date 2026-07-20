@@ -1,6 +1,8 @@
+import datetime
 import os
 import re
 import sys
+from zoneinfo import ZoneInfo
 
 try:
     __compiled__  # noqa: F821 - injected by Nuitka into compiled modules
@@ -30,6 +32,10 @@ USER_AGENT = (
 LOGIN_POLL_INTERVAL_SECONDS = 15
 TRADE_CLOSE_POLL_INTERVAL_SECONDS = 20
 TRADE_CLOSE_TIMEOUT_SECONDS = 24 * 60 * 60
+
+# The trading session window (SESSION_START_TIME/SESSION_END_TIME in .env,
+# "HH:MM" 24-hour) is always interpreted in Israel local time, DST and all.
+SESSION_TIMEZONE = ZoneInfo("Asia/Jerusalem")
 
 # Starter list of well-known futures prop firms -- easy to extend, this is
 # just what's popular at time of writing. One Tradovate account per firm.
@@ -68,6 +74,49 @@ def tradovate_env_key(company, field):
 
 def get_env_value(key, default=""):
     return _env.get(key, default)
+
+
+def _parse_time(raw):
+    """Parses a "HH:MM" 24-hour string into a datetime.time, or None if
+    it's missing/malformed."""
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    try:
+        hour, minute = raw.split(":", 1)
+        return datetime.time(int(hour), int(minute))
+    except ValueError:
+        return None
+
+
+def now_in_israel():
+    return datetime.datetime.now(SESSION_TIMEZONE)
+
+
+def session_window_status(now=None):
+    """Whether trading is currently allowed under the configured session
+    window (SESSION_START_TIME/SESSION_END_TIME), Israel time.
+
+    Returns a (status, seconds) tuple:
+      - ('unrestricted', None): no window configured -- always allowed.
+      - ('open', None): within today's window.
+      - ('waiting', seconds_until_open): outside the window -- either
+        today's hasn't started yet, or today's has already closed and this
+        counts down to tomorrow's start instead, so the caller can just
+        sleep and resume automatically rather than stopping for the day.
+
+    Assumes a same-day window (start < end) -- there's no support for a
+    window that spans midnight.
+    """
+    if SESSION_START_TIME is None or SESSION_END_TIME is None:
+        return 'unrestricted', None
+    now = now or now_in_israel()
+    current_time = now.time()
+    if SESSION_START_TIME <= current_time <= SESSION_END_TIME:
+        return 'open', None
+    start_date = now.date() if current_time < SESSION_START_TIME else now.date() + datetime.timedelta(days=1)
+    start_dt = datetime.datetime.combine(start_date, SESSION_START_TIME, tzinfo=SESSION_TIMEZONE)
+    return 'waiting', (start_dt - now).total_seconds()
 
 
 def _load_env_file(path):
@@ -112,6 +161,7 @@ def set_env_values(values):
 def _reload_env():
     global _env, TRADINGGENERATOR_USERNAME, TRADINGGENERATOR_PASSWORD
     global TRADOVATE_ACCOUNTS, ACCOUNT_BALANCE_TIERS
+    global SESSION_START_TIME, SESSION_END_TIME
     _env = _load_env_file(ENV_FILE)
     TRADINGGENERATOR_USERNAME = _env.get("TRADINGGENERATOR_USERNAME", "")
     TRADINGGENERATOR_PASSWORD = _env.get("TRADINGGENERATOR_PASSWORD", "")
@@ -131,6 +181,10 @@ def _reload_env():
         min_val = float(_env.get(f"{prefix}_MIN_BALANCE", default_min))
         max_val = float(_env.get(f"{prefix}_MAX_BALANCE", default_max))
         ACCOUNT_BALANCE_TIERS[size] = (min_val, max_val)
+
+    # Unset by default -- no session window means trading is allowed anytime.
+    SESSION_START_TIME = _parse_time(_env.get("SESSION_START_TIME", ""))
+    SESSION_END_TIME = _parse_time(_env.get("SESSION_END_TIME", ""))
 
 
 _reload_env()
