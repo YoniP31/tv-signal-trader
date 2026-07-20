@@ -1,5 +1,7 @@
+import os
 import threading
 
+from . import browser
 from . import config
 from . import state
 from . import status
@@ -21,6 +23,13 @@ class LoginMonitor:
 
     Runs only while state.session.driver_lock is free, so it never interleaves
     with a command in progress.
+
+    Also doubles as the app's "did the user close the browser?" check: if
+    every Chrome window is gone, chromedriver's session is gone with it, so
+    this hard-exits the whole process rather than leaving the CLI sitting
+    uselessly at the '>' prompt forever. A plain sys.exit() wouldn't reach
+    past that blocked input() call on the main thread -- it'd just end this
+    background thread -- so os._exit() is used deliberately here.
     """
 
     def __init__(self, driver, interval=config.LOGIN_POLL_INTERVAL_SECONDS):
@@ -42,6 +51,11 @@ class LoginMonitor:
 
     def _poll_once(self):
         with state.session.driver_lock:
+            if not browser.is_alive(self.driver):
+                print("\n[FAIL] Browser window closed - exiting.")
+                status.mark_app_stopped()
+                os._exit(0)
+
             tv_logged_in = status.check_tradingview_logged_in(self.driver)
             if tv_logged_in is not None:
                 status.update(tradingview_logged_in=tv_logged_in)

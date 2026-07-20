@@ -31,3 +31,13 @@ def create_driver():
         """
     })
     return driver
+
+
+def is_alive(driver):
+    """False once the browser itself is gone (e.g. the user closed every
+    window) -- at that point chromedriver's underlying session is dead too,
+    so any call to the driver raises rather than returning an empty list."""
+    try:
+        return bool(driver.window_handles)
+    except Exception:
+        return False
