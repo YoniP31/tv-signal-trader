@@ -178,8 +178,12 @@ def _reload_env():
     ACCOUNT_BALANCE_TIERS = {}
     for size, (default_min, default_max) in _DEFAULT_ACCOUNT_TIER_RANGES.items():
         prefix = f"ACCOUNT_{size // 1000}K"
-        min_val = float(_env.get(f"{prefix}_MIN_BALANCE", default_min))
-        max_val = float(_env.get(f"{prefix}_MAX_BALANCE", default_max))
+        # `or default` (not a dict-get default) so a present-but-blank line
+        # in .env -- e.g. a commented-out template value someone uncommented
+        # without filling in -- falls back cleanly instead of `float('')`
+        # raising.
+        min_val = float(_env.get(f"{prefix}_MIN_BALANCE") or default_min)
+        max_val = float(_env.get(f"{prefix}_MAX_BALANCE") or default_max)
         ACCOUNT_BALANCE_TIERS[size] = (min_val, max_val)
 
     # Unset by default -- no session window means trading is allowed anytime.
