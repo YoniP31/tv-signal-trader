@@ -125,7 +125,7 @@ There's also an open question from watching the real TradingGenerator UI: after 
 ### Other known follow-ups
 
 - **Harden trade entry (steps 1-2 of `place_order()`)**: these are the oldest, least-robust part of the function — "select side" (`Shift+B`/`Shift+S`) and "select Market order" — and have no real failure detection today (step 2's click loop silently swallows failures via `except: pass`). Every step should verify it actually succeeded and abort the whole trade attempt if not, instead of continuing on to type into a panel that may not be in the expected state.
-- **Automatic Tradovate connection**: log into/select the right broker connection as part of the flow instead of requiring it to already be active manually. Needs support for *multiple* Tradovate username/password pairs in `.env`/`setup_wizard.py`, plus a heuristic for choosing which account to use for a given trade (not yet defined).
+- **Automatic Tradovate connection**: done — `run_web_loop` reads which company/portfolio a signal is for from TradingGenerator's page (proactively selecting those tabs before generating, with a fallback that reads TradingGenerator's own "wrong account" warning if the guess was wrong), and connects/switches to the matching Tradovate account via `.env`/`setup_wizard.py`'s multi-account (`PROP_FIRMS`) support. Not yet handled: portfolios tucked behind TradingGenerator's "+N Portfolios" picker (today only the currently-displayed portfolio tab per company can be selected).
 
 ## Repository docs
 

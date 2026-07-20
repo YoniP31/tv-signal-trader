@@ -110,32 +110,143 @@ def open_tab(driver, other_tab):
     return web_tab
 
 
-def generate_trade(driver):
-    """Clicks GENERATE NEW TRADE on the current (TradingGenerator) tab.
+def _tab_name(tab_el):
+    """The plain-text name span inside a company/portfolio tab, excluding its
+    icon/badge/delete-x children."""
+    try:
+        return tab_el.find_element(
+            By.CSS_SELECTOR, "span:not(.tab-x):not(.tab-type):not(.tab-delete)"
+        ).text.strip()
+    except Exception:
+        return None
 
-    Returns 'generated', 'locked' (the daily trade limit's been reached -- the
-    button relabels itself to something like "REACHED 4 TRADES TODAY -
-    PORTFOLIO LOCKED"), or 'not_found' (something unexpected).
-    """
-    for btn in driver.find_elements(By.TAG_NAME, "button"):
-        text = btn.text.strip()
-        if 'generate new trade' in text.lower():
+
+def select_company(driver, company):
+    """Clicks the #companiesBar tab matching `company` by name, if it isn't
+    already active. Returns True if a matching tab was found."""
+    for tab in driver.find_elements(By.CSS_SELECTOR, "#companiesBar .company-tab"):
+        if _tab_name(tab) == company:
+            if 'active' not in (tab.get_attribute('class') or '').split():
+                tab.click()
+                humanize.long_pause(1, 2)
+            return True
+    print(f"  [WARN] Company tab '{company}' not found.")
+    return False
+
+
+def select_portfolio(driver, portfolio):
+    """Clicks the #portfolioBar tab matching `portfolio` by name, if it isn't
+    already active. Returns True if a matching tab was found -- e.g. it can
+    fail if the portfolio belongs to a different (not-yet-selected) company,
+    or is tucked away behind a "+N Portfolios" picker this doesn't open yet."""
+    for tab in driver.find_elements(By.CSS_SELECTOR, "#portfolioBar .portfolio-tab"):
+        if _tab_name(tab) == portfolio:
+            classes = (tab.get_attribute('class') or '').split()
+            if not any(c.startswith('active') for c in classes):
+                tab.click()
+                humanize.long_pause(1, 2)
+            return True
+    print(f"  [WARN] Portfolio tab '{portfolio}' not visible.")
+    return False
+
+
+def _read_wrong_account_warning(driver):
+    """If TradingGenerator's "wrong account" warning modal is showing (you
+    tried to generate a trade for the wrong company/portfolio), returns the
+    (user, company, portfolio) it says should be selected instead. Otherwise
+    None."""
+    try:
+        text_el = driver.find_element(By.ID, "wrongAccountText")
+    except Exception:
+        return None
+
+    visible = driver.execute_script("""
+        var el = arguments[0];
+        var style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden') return false;
+        var rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+    """, text_el)
+    if not visible:
+        return None
+
+    try:
+        strong = text_el.find_element(By.TAG_NAME, "strong")
+    except Exception:
+        return None
+    parts = [p.strip() for p in strong.text.split('›')]
+    if len(parts) != 3:
+        return None
+    return tuple(parts)
+
+
+def _cancel_wrong_account_modal(driver):
+    for btn in driver.find_elements(By.CSS_SELECTOR, ".modal-cancel"):
+        if btn.is_displayed():
             btn.click()
-            print(f"  Clicked: '{text}' [OK]")
+            humanize.long_pause(1, 2)
+            return True
+    return False
+
+
+def generate_trade(driver, expected_company=None, expected_portfolio=None):
+    """Clicks GENERATE NEW TRADE (#generateBtn) on the current (TradingGenerator) tab.
+
+    `expected_company`/`expected_portfolio` (the "next trade to trade" hint
+    read off the previous generate -- see read_trade_parameters) are selected
+    first, if given. Either way, if TradingGenerator still pops up its "wrong
+    account" warning (e.g. on the very first trade of a run, when there's no
+    hint yet, or if something's out of sync), this reads the correct
+    company/portfolio off the warning itself, cancels, switches, and retries
+    once.
+
+    Returns 'generated', 'locked' (the daily trade limit's been reached --
+    the button relabels itself to something like "REACHED 4 TRADES TODAY -
+    PORTFOLIO LOCKED"), 'cooldown' (a previous trade hasn't finished its ~30s
+    cooldown yet -- the button stays disabled but keeps reading "GENERATE NEW
+    TRADE", so a naive click would silently no-op and leave us reading stale
+    parameters from the previous trade), 'wrong_account' (still mismatched
+    after one correction attempt), or 'not_found' (something unexpected).
+    """
+    if expected_company:
+        select_company(driver, expected_company)
+    if expected_portfolio:
+        select_portfolio(driver, expected_portfolio)
+
+    for _ in range(2):
+        try:
+            btn = driver.find_element(By.ID, "generateBtn")
+        except Exception:
+            print("  GENERATE NEW TRADE button (#generateBtn) not found!")
+            return 'not_found'
+
+        text = btn.text.strip()
+        disabled = btn.get_attribute("disabled") is not None
+
+        if disabled:
+            if 'locked' in text.lower() or 'reached' in text.lower():
+                print(f"  Portfolio locked: '{text}'")
+                return 'locked'
+            print(f"  Generate button is disabled (cooldown in progress): '{text}'")
+            return 'cooldown'
+
+        btn.click()
+        print(f"  Clicked: '{text}' [OK]")
+        humanize.long_pause(1, 2)
+
+        warning = _read_wrong_account_warning(driver)
+        if warning is None:
             return 'generated'
 
-    for btn in driver.find_elements(By.TAG_NAME, "button"):
-        text = btn.text.strip().lower()
-        if 'locked' in text or 'reached' in text:
-            print(f"  Portfolio locked: '{btn.text.strip()}'")
-            return 'locked'
+        _, warn_company, warn_portfolio = warning
+        print(f"  [WARN] Wrong company/portfolio selected - TradingGenerator wants "
+              f"'{warn_company} / {warn_portfolio}'. Cancelling and switching...")
+        _cancel_wrong_account_modal(driver)
+        select_company(driver, warn_company)
+        select_portfolio(driver, warn_portfolio)
 
-    print("  GENERATE NEW TRADE button not found! Buttons seen on page:")
-    for btn in driver.find_elements(By.TAG_NAME, "button"):
-        text = btn.text.strip()
-        if text:
-            print(f"    '{text}'")
-    return 'not_found'
+    print("  [FAIL] Still on the wrong company/portfolio after switching - giving up.")
+    return 'wrong_account'
 
 
 def _extract_field(driver, label):
@@ -161,9 +272,25 @@ def _extract_field(driver, label):
     return shortest[len(label):].strip()
 
 
+def _extract_by_id(driver, element_id):
+    try:
+        return driver.find_element(By.ID, element_id).text.strip()
+    except Exception:
+        return None
+
+
+def _extract_by_class(driver, class_name):
+    try:
+        return driver.find_element(By.CSS_SELECTOR, f".{class_name}").text.strip()
+    except Exception:
+        return None
+
+
 def read_trade_parameters(driver):
-    """Reads the TRADE PARAMETERS box (asset/direction/contracts/SL/TP) from
-    the currently open TradingGenerator tab."""
+    """Reads the TRADE PARAMETERS box (asset/direction/contracts/SL/TP), the
+    active portfolio/company, and the "Next Portfolio to Trade" hint (which
+    company/portfolio the *next* generate should target -- shown after this
+    one was generated) from the currently open TradingGenerator tab."""
     asset = _extract_field(driver, "ASSET")
     direction = _extract_field(driver, "DIRECTION")
     contracts_raw = _extract_field(driver, "CONTRACTS") or ""
@@ -174,6 +301,14 @@ def read_trade_parameters(driver):
     sl_match = re.search(r'(\d+)\s*ticks', sl_raw, re.IGNORECASE)
     tp_match = re.search(r'(\d+)\s*ticks', tp_raw, re.IGNORECASE)
 
+    portfolio = _extract_by_id(driver, "portfolioTitle")
+    company_raw = _extract_by_id(driver, "companyBreadcrumb")
+    # companyBreadcrumb is prefixed with a "diamond" bullet icon (e.g. "◆ Main Company").
+    company = re.sub(r'^[^\w]+', '', company_raw).strip() if company_raw else None
+
+    next_company = _extract_by_class(driver, "next-acc-firm")
+    next_portfolio = _extract_by_class(driver, "next-acc-account")
+
     return {
         'asset': asset,
         'direction': direction.upper() if direction else None,
@@ -181,6 +316,10 @@ def read_trade_parameters(driver):
         'contract_size': re.sub(r'[\d\s]', '', contracts_raw) or None,
         'sl_ticks': int(sl_match.group(1)) if sl_match else None,
         'tp_ticks': int(tp_match.group(1)) if tp_match else None,
+        'portfolio': portfolio or None,
+        'company': company or None,
+        'next_company': next_company or None,
+        'next_portfolio': next_portfolio or None,
     }
 
 
