@@ -1,4 +1,5 @@
 import re
+import time
 
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -137,8 +138,7 @@ def select_company(driver, company):
 def select_portfolio(driver, portfolio):
     """Clicks the #portfolioBar tab matching `portfolio` by name, if it isn't
     already active. Returns True if a matching tab was found -- e.g. it can
-    fail if the portfolio belongs to a different (not-yet-selected) company,
-    or is tucked away behind a "+N Portfolios" picker this doesn't open yet."""
+    fail if the portfolio belongs to a different (not-yet-selected) company."""
     for tab in driver.find_elements(By.CSS_SELECTOR, "#portfolioBar .portfolio-tab"):
         if _tab_name(tab) == portfolio:
             classes = (tab.get_attribute('class') or '').split()
@@ -150,13 +150,58 @@ def select_portfolio(driver, portfolio):
     return False
 
 
-def _confirm_delete_portfolio(driver, attempts=6):
-    """Clicks the 'Delete' confirm button on the "Delete Portfolio" warning
-    modal that pops up after clicking a portfolio tab's delete 'X'."""
+def list_companies(driver):
+    """Names of every company tab in #companiesBar -- all of them are
+    always visible there (no hidden picker), so this is the full list."""
+    return [
+        name for name in (
+            _tab_name(tab) for tab in driver.find_elements(By.CSS_SELECTOR, "#companiesBar .company-tab")
+        ) if name
+    ]
+
+
+def list_portfolios(driver):
+    """Names of every portfolio tab in #portfolioBar for whichever company
+    is currently selected -- all of a company's portfolios are always
+    visible there (no hidden picker; "+N Portfolios" just bulk-creates)."""
+    return [
+        name for name in (
+            _tab_name(tab) for tab in driver.find_elements(By.CSS_SELECTOR, "#portfolioBar .portfolio-tab")
+        ) if name
+    ]
+
+
+def list_all_candidates(driver):
+    """Every (company, portfolio) pair currently configured in
+    TradingGenerator, by selecting each company in turn and reading its
+    portfolio tabs. Leaves the last company in the list selected."""
+    candidates = []
+    for company in list_companies(driver):
+        select_company(driver, company)
+        for portfolio in list_portfolios(driver):
+            candidates.append((company, portfolio))
+    return candidates
+
+
+def read_active_company_portfolio(driver):
+    """Reads whichever company/portfolio is currently selected/active in
+    TradingGenerator's UI, independent of whether a trade's been generated
+    for it yet."""
+    portfolio = _extract_by_id(driver, "portfolioTitle")
+    company_raw = _extract_by_id(driver, "companyBreadcrumb")
+    # companyBreadcrumb is prefixed with a "diamond" bullet icon (e.g. "◆ Main Company").
+    company = re.sub(r'^[^\w]+', '', company_raw).strip() if company_raw else None
+    return company or None, portfolio or None
+
+
+def _click_visible(driver, selector, attempts=6):
+    """Clicks the first currently-visible element matching `selector`,
+    retrying briefly in case it hasn't rendered yet (e.g. a modal still
+    animating in). Returns True if something was clicked."""
     for _ in range(attempts):
-        for btn in driver.find_elements(By.CSS_SELECTOR, ".modal-confirm"):
-            if btn.is_displayed():
-                btn.click()
+        for el in driver.find_elements(By.CSS_SELECTOR, selector):
+            if el.is_displayed():
+                el.click()
                 humanize.long_pause(1, 2)
                 return True
         humanize.pause(0.4, 0.7)
@@ -179,7 +224,7 @@ def remove_portfolio(driver, portfolio):
                 return False
             delete_btn.click()
             humanize.long_pause(1, 2)
-            if not _confirm_delete_portfolio(driver):
+            if not _click_visible(driver, ".modal-confirm"):
                 print(f"  [WARN] Delete confirmation modal for '{portfolio}' not found.")
                 return False
             print(f"  Removed portfolio '{portfolio}' from TradingGenerator [OK]")
@@ -218,40 +263,58 @@ def _read_wrong_account_warning(driver):
     return tuple(parts)
 
 
-def _cancel_wrong_account_modal(driver):
-    for btn in driver.find_elements(By.CSS_SELECTOR, ".modal-cancel"):
-        if btn.is_displayed():
-            btn.click()
-            humanize.long_pause(1, 2)
-            return True
-    return False
+def _read_cooldown_seconds(driver):
+    """Parses the "MM:SS" countdown in #cooldownTimerText (the "Waiting for
+    next trade" cooldown after a generate), or None if it's not present/
+    visible -- e.g. the generate button is disabled for some other reason."""
+    try:
+        el = driver.find_element(By.ID, "cooldownTimerText")
+    except Exception:
+        return None
+    if not el.is_displayed():
+        return None
+    match = re.match(r'^(\d+):(\d+)$', el.text.strip())
+    if not match:
+        return None
+    return int(match.group(1)) * 60 + int(match.group(2))
 
 
-def generate_trade(driver, expected_company=None, expected_portfolio=None):
+def generate_trade(driver, expected_company=None, expected_portfolio=None, force=False):
     """Clicks GENERATE NEW TRADE (#generateBtn) on the current (TradingGenerator) tab.
 
     `expected_company`/`expected_portfolio` (the "next trade to trade" hint
-    read off the previous generate -- see read_trade_parameters) are selected
-    first, if given. Either way, if TradingGenerator still pops up its "wrong
-    account" warning (e.g. on the very first trade of a run, when there's no
-    hint yet, or if something's out of sync), this reads the correct
-    company/portfolio off the warning itself, cancels, switches, and retries
-    once.
+    read off the previous generate -- see read_trade_parameters -- or an
+    explicit fallback portfolio picked by the caller) are selected first, if
+    given.
+
+    If the generate button is on its post-trade cooldown, this waits it out
+    (reading the countdown itself) and retries rather than giving up.
+
+    If TradingGenerator pops up its "wrong account" warning -- the selected
+    company/portfolio doesn't match what it expects next -- behavior depends
+    on `force`:
+      - force=False (default): treat our selection as a mistake. Read the
+        correct company/portfolio off the warning, cancel, switch, and retry
+        (up to twice) -- this is the normal path, using TradingGenerator's
+        own rotation.
+      - force=True: we deliberately chose a specific company/portfolio
+        (e.g. trying a fallback because the usual one is locked), so click
+        "Proceed Anyway" instead of cancelling.
 
     Returns 'generated', 'locked' (the daily trade limit's been reached --
     the button relabels itself to something like "REACHED 4 TRADES TODAY -
-    PORTFOLIO LOCKED"), 'cooldown' (a previous trade hasn't finished its ~30s
-    cooldown yet -- the button stays disabled but keeps reading "GENERATE NEW
-    TRADE", so a naive click would silently no-op and leave us reading stale
-    parameters from the previous trade), 'wrong_account' (still mismatched
-    after one correction attempt), or 'not_found' (something unexpected).
+    PORTFOLIO LOCKED"), 'wrong_account' (still mismatched after retrying, or
+    "Proceed Anyway" didn't work), or 'not_found' (the generate button
+    itself isn't on the page).
     """
     if expected_company:
         select_company(driver, expected_company)
     if expected_portfolio:
         select_portfolio(driver, expected_portfolio)
 
-    for _ in range(2):
+    wrong_account_attempts = 0
+    cooldown_waits = 0
+    while True:
         try:
             btn = driver.find_element(By.ID, "generateBtn")
         except Exception:
@@ -265,8 +328,14 @@ def generate_trade(driver, expected_company=None, expected_portfolio=None):
             if 'locked' in text.lower() or 'reached' in text.lower():
                 print(f"  Portfolio locked: '{text}'")
                 return 'locked'
-            print(f"  Generate button is disabled (cooldown in progress): '{text}'")
-            return 'cooldown'
+            cooldown = _read_cooldown_seconds(driver)
+            cooldown_waits += 1
+            if cooldown is None or cooldown_waits > 5:
+                print(f"  Generate button is disabled for an unrecognized reason: '{text}'")
+                return 'locked'
+            print(f"  On cooldown - waiting {cooldown}s for it to clear...")
+            time.sleep(cooldown + 1)
+            continue
 
         btn.click()
         print(f"  Clicked: '{text}' [OK]")
@@ -277,14 +346,23 @@ def generate_trade(driver, expected_company=None, expected_portfolio=None):
             return 'generated'
 
         _, warn_company, warn_portfolio = warning
+        if force:
+            print(f"  [WARN] TradingGenerator wants '{warn_company} / {warn_portfolio}' "
+                  f"next, but proceeding anyway with the explicitly requested portfolio...")
+            if not _click_visible(driver, ".modal-confirm"):
+                print("  [FAIL] Could not confirm 'Proceed Anyway'.")
+                return 'wrong_account'
+            return 'generated'
+
+        wrong_account_attempts += 1
+        if wrong_account_attempts > 2:
+            print("  [FAIL] Still on the wrong company/portfolio after switching - giving up.")
+            return 'wrong_account'
         print(f"  [WARN] Wrong company/portfolio selected - TradingGenerator wants "
               f"'{warn_company} / {warn_portfolio}'. Cancelling and switching...")
-        _cancel_wrong_account_modal(driver)
+        _click_visible(driver, ".modal-cancel")
         select_company(driver, warn_company)
         select_portfolio(driver, warn_portfolio)
-
-    print("  [FAIL] Still on the wrong company/portfolio after switching - giving up.")
-    return 'wrong_account'
 
 
 def _extract_field(driver, label):
@@ -339,10 +417,7 @@ def read_trade_parameters(driver):
     sl_match = re.search(r'(\d+)\s*ticks', sl_raw, re.IGNORECASE)
     tp_match = re.search(r'(\d+)\s*ticks', tp_raw, re.IGNORECASE)
 
-    portfolio = _extract_by_id(driver, "portfolioTitle")
-    company_raw = _extract_by_id(driver, "companyBreadcrumb")
-    # companyBreadcrumb is prefixed with a "diamond" bullet icon (e.g. "◆ Main Company").
-    company = re.sub(r'^[^\w]+', '', company_raw).strip() if company_raw else None
+    company, portfolio = read_active_company_portfolio(driver)
 
     next_company = _extract_by_class(driver, "next-acc-firm")
     next_portfolio = _extract_by_class(driver, "next-acc-account")
@@ -354,8 +429,8 @@ def read_trade_parameters(driver):
         'contract_size': re.sub(r'[\d\s]', '', contracts_raw) or None,
         'sl_ticks': int(sl_match.group(1)) if sl_match else None,
         'tp_ticks': int(tp_match.group(1)) if tp_match else None,
-        'portfolio': portfolio or None,
-        'company': company or None,
+        'portfolio': portfolio,
+        'company': company,
         'next_company': next_company or None,
         'next_portfolio': next_portfolio or None,
     }

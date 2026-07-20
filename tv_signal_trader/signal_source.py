@@ -4,18 +4,74 @@ from . import status
 from . import trading
 from . import tradinggenerator as tg
 
+# Circuit breaker for failures that aren't tied to a specific company/
+# portfolio (missing trade parameters, order execution) -- those retry by
+# just moving on to the next signal, so this bounds how many times in a row
+# that can happen before something is clearly systemically wrong.
+MAX_CONSECUTIVE_FAILURES = 5
+
+
+def _generate_next_trade(driver, next_company, next_portfolio, unavailable):
+    """Tries to generate a trade for the hinted next_company/next_portfolio
+    (or, if there's no hint yet, whatever's currently selected). If that
+    portfolio is locked, mismatched, or already known bad, falls back to
+    trying every other configured company/portfolio pair in turn.
+
+    `unavailable` is a set of (company, portfolio) pairs already found to be
+    unusable this session (locked, persistent mismatch, etc.) -- mutated in
+    place so the caller keeps skipping them on future calls too.
+
+    Returns 'generated', 'not_found' (the generate button itself is missing
+    -- a structural problem, not specific to any one portfolio), or
+    'exhausted' (every known candidate is locked/unavailable).
+    """
+    hint = (next_company, next_portfolio) if next_company and next_portfolio else None
+    if hint is None or hint not in unavailable:
+        outcome = tg.generate_trade(
+            driver, expected_company=next_company, expected_portfolio=next_portfolio
+        )
+        if outcome == 'generated':
+            return 'generated'
+        if outcome == 'not_found':
+            return 'not_found'
+        bad = hint or tg.read_active_company_portfolio(driver)
+        if bad[0] and bad[1]:
+            print(f"  '{bad[0]} / {bad[1]}' isn't available ({outcome}) - trying other portfolios...")
+            unavailable.add(bad)
+        else:
+            print(f"  Current portfolio isn't available ({outcome}) - trying other portfolios...")
+
+    for company, portfolio in tg.list_all_candidates(driver):
+        if (company, portfolio) in unavailable:
+            continue
+        print(f"  Trying '{company} / {portfolio}'...")
+        outcome = tg.generate_trade(
+            driver, expected_company=company, expected_portfolio=portfolio, force=True
+        )
+        if outcome == 'generated':
+            return 'generated'
+        if outcome == 'not_found':
+            return 'not_found'
+        unavailable.add((company, portfolio))
+
+    return 'exhausted'
+
 
 def run_web_loop(driver):
     """Repeatedly: generates a TradingGenerator signal, executes it on
-    TradingView, waits for it to close, and reports the result back --
-    until the daily trade limit locks the portfolio or something goes wrong.
-    Stoppable with Ctrl+C at any point.
+    TradingView, waits for it to close, and reports the result back.
+    Rotates through other companies/portfolios when the current one is
+    locked or otherwise unavailable, and only stops when nothing tradeable
+    is left, TradingGenerator login fails, or a trade's outcome genuinely
+    can't be determined. Stoppable with Ctrl+C at any point.
     """
     print("\n[WEB] Starting automatic trading loop (Ctrl+C to stop)...")
     tv_tab = driver.current_window_handle
     connected_company = None
     next_company = None
     next_portfolio = None
+    unavailable = set()
+    consecutive_failures = 0
     try:
         web_tab = tg.open_tab(driver, tv_tab)
         print("  TradingGenerator tab ready [OK]")
@@ -29,28 +85,28 @@ def run_web_loop(driver):
                 print("  [FAIL] TradingGenerator login failed - stopping loop.")
                 return
 
-            outcome = tg.generate_trade(
-                driver, expected_company=next_company, expected_portfolio=next_portfolio
-            )
-            if outcome == 'locked':
-                print("  Daily trade limit reached - stopping loop.")
-                return
-            if outcome == 'cooldown':
-                print("  [FAIL] Generate button is still on cooldown from a previous "
-                      "trade - stopping loop rather than reading stale parameters.")
-                return
-            if outcome == 'wrong_account':
-                print("  [FAIL] Could not get onto the right company/portfolio before "
-                      "generating - stopping loop.")
-                return
-            if outcome == 'not_found':
+            gen_outcome = _generate_next_trade(driver, next_company, next_portfolio, unavailable)
+            if gen_outcome == 'not_found':
                 print("  [FAIL] Could not generate a trade - stopping loop.")
+                return
+            if gen_outcome != 'generated':
+                print("  No tradeable portfolio available right now (all locked/unavailable) "
+                      "- stopping loop.")
                 return
 
             humanize.long_pause(2, 3)
-            params = tg.read_trade_parameters(driver)
-            next_company = params['next_company']
-            next_portfolio = params['next_portfolio']
+            missing = []
+            for attempt in range(3):
+                params = tg.read_trade_parameters(driver)
+                direction = {'LONG': 'buy', 'SHORT': 'sell'}.get(params['direction'])
+                missing = [k for k in ('asset', 'contracts', 'sl_ticks', 'tp_ticks', 'company', 'portfolio') if params[k] is None]
+                if direction is None:
+                    missing.append('direction')
+                if not missing:
+                    break
+                if attempt < 2:
+                    humanize.pause(1, 2)
+
             print(f"  Portfolio:   {params['portfolio']}")
             print(f"  Company:     {params['company']}")
             print(f"  Asset:       {params['asset']}")
@@ -59,23 +115,30 @@ def run_web_loop(driver):
             print(f"  Stop Loss:   {params['sl_ticks']} ticks")
             print(f"  Take Profit: {params['tp_ticks']} ticks")
 
-            direction = {'LONG': 'buy', 'SHORT': 'sell'}.get(params['direction'])
-            missing = [k for k in ('asset', 'contracts', 'sl_ticks', 'tp_ticks', 'company', 'portfolio') if params[k] is None]
-            if direction is None:
-                missing.append('direction')
+            next_company = params['next_company']
+            next_portfolio = params['next_portfolio']
+
             if missing:
-                print(f"  [FAIL] Missing trade parameters ({', '.join(missing)}) - stopping loop.")
+                print(f"  [FAIL] Missing trade parameters ({', '.join(missing)}) after retries - "
+                      "reporting Trade Not Taken and moving on.")
                 tg.report_trade_result(driver, 'not_taken')
-                return
+                consecutive_failures += 1
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                    print(f"  [FAIL] {consecutive_failures} consecutive failures - stopping loop.")
+                    return
+                humanize.long_pause(2, 3)
+                continue
 
             company = params['company']
             account = config.TRADOVATE_ACCOUNTS.get(company)
             if account is None:
                 configured = ', '.join(config.TRADOVATE_ACCOUNTS) or 'none'
                 print(f"  [FAIL] No Tradovate account configured for company '{company}' "
-                      f"(configured: {configured}) - run 'setup' to add it. Stopping loop.")
+                      f"(configured: {configured}) - run 'setup' to add it. Trying other portfolios...")
                 tg.report_trade_result(driver, 'not_taken')
-                return
+                unavailable.add((company, params['portfolio']))
+                humanize.long_pause(2, 3)
+                continue
 
             driver.switch_to.window(tv_tab)
             trading.load_chart_for_signal(driver, params['asset'], params['contract_size'])
@@ -87,18 +150,24 @@ def run_web_loop(driver):
                 else:
                     print(f"  Connecting Tradovate account for '{company}'...")
                 if not trading.connect_tradovate(driver, account['username'], account['password']):
-                    print("  [FAIL] Could not connect to Tradovate - stopping loop.")
+                    print(f"  [FAIL] Could not connect to Tradovate for '{company}' - "
+                          "trying other portfolios...")
                     connected_company = None
                     driver.switch_to.window(web_tab)
                     tg.report_trade_result(driver, 'not_taken')
-                    return
+                    unavailable.add((company, params['portfolio']))
+                    humanize.long_pause(2, 3)
+                    continue
                 connected_company = company
 
             if not trading.select_tradovate_account(driver, params['portfolio']):
-                print("  [FAIL] Could not select the correct Tradovate account - stopping loop.")
+                print(f"  [FAIL] Could not select Tradovate account '{params['portfolio']}' - "
+                      "trying other portfolios...")
                 driver.switch_to.window(web_tab)
                 tg.report_trade_result(driver, 'not_taken')
-                return
+                unavailable.add((company, params['portfolio']))
+                humanize.long_pause(2, 3)
+                continue
 
             # Belt-and-suspenders: the same balance check runs after every
             # trade closes and should already have removed a violating
@@ -124,10 +193,17 @@ def run_web_loop(driver):
                 units=params['contracts'],
             )
             if not entered:
-                print("\n[FAIL] Trade execution failed - stopping loop.")
+                print("\n[FAIL] Trade execution failed - reporting Trade Not Taken and moving on.")
                 driver.switch_to.window(web_tab)
                 tg.report_trade_result(driver, 'not_taken')
-                return
+                consecutive_failures += 1
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                    print(f"  [FAIL] {consecutive_failures} consecutive failures - stopping loop.")
+                    return
+                humanize.long_pause(2, 3)
+                continue
+
+            consecutive_failures = 0
 
             print("\n[OK] Trade executed! Waiting for it to close...")
             close_outcome = trading.wait_for_close(driver)
