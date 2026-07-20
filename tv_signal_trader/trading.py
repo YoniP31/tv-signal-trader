@@ -650,19 +650,23 @@ def account_needs_removal(driver, tiers=None):
     certain which account is active and that no position is open, so the
     balance reading is trustworthy.
 
-    Returns True if the account is outside its tier's range (should be
-    removed), False if it's within range, None if the balance couldn't be
-    read.
+    Returns (needs_removal, balance, tier_size, tier_range):
+      - needs_removal: True/False, or None if the balance couldn't be read
+      - balance: the balance just read, or None
+      - tier_size/tier_range: the account-size tier it was matched against
+        (its nominal size, and its (min, max) allowed range), or
+        (None, None) if the balance couldn't be read
     """
     tiers = tiers if tiers is not None else config.ACCOUNT_BALANCE_TIERS
     balance = read_account_balance(driver)
     if balance is None:
-        return None
+        return None, None, None, None
     nearest_size = min(tiers, key=lambda size: abs(balance - size))
-    min_threshold, max_threshold = tiers[nearest_size]
+    tier_range = tiers[nearest_size]
+    min_threshold, max_threshold = tier_range
     print(f"  Account balance: {balance:.2f} (closest tier: {nearest_size}, "
           f"allowed range: {min_threshold:.2f} - {max_threshold:.2f})")
-    if balance <= min_threshold or balance >= max_threshold:
+    needs_removal = balance <= min_threshold or balance >= max_threshold
+    if needs_removal:
         print(f"  [WARN] Account balance {balance:.2f} is outside its allowed range.")
-        return True
-    return False
+    return needs_removal, balance, nearest_size, tier_range
