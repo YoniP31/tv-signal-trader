@@ -1,6 +1,6 @@
 # TradingView Auto-Trader
 
-Selenium-based bot that reads a trade signal from [TradingGenerator](https://tradinggenerator-english.tiiny.co/) (asset, direction, contract count, stop-loss/take-profit in ticks), switches the TradingView chart to the matching futures symbol, and places the trade (Market order + Take Profit + Stop Loss) through TradingView's order ticket.
+Selenium-based bot that reads a trade signal from [TradingGenerator](https://tradinggenerator-english.tiiny.co/) (asset, direction, contract count, stop-loss/take-profit in ticks, and which prop firm/portfolio it's for), switches the TradingView chart to the matching futures symbol, connects the matching Tradovate account, and places the trade (Market order + Take Profit + Stop Loss) through TradingView's order ticket. Runs unattended across multiple companies/portfolios, a bounded daily trading session, and account balance limits.
 
 ## What the code currently does
 
@@ -11,13 +11,13 @@ The implementation lives in the [tv_signal_trader/](tv_signal_trader/) package, 
 | [main.py](main.py) | Entry point — `python main.py` |
 | [tv_signal_trader/config.py](tv_signal_trader/config.py) | Paths, URLs, `.env`-backed settings, and other constants |
 | [tv_signal_trader/setup_wizard.py](tv_signal_trader/setup_wizard.py) | First-run/`setup` command: prompts for and persists TradingGenerator credentials and (multiple, one per prop firm) Tradovate accounts |
-| [tv_signal_trader/browser.py](tv_signal_trader/browser.py) | Chrome setup and stealth tweaks |
+| [tv_signal_trader/browser.py](tv_signal_trader/browser.py) | Chrome setup, stealth tweaks, and download preferences |
 | [tv_signal_trader/humanize.py](tv_signal_trader/humanize.py) | Randomized pauses and human-like typing |
 | [tv_signal_trader/panel.py](tv_signal_trader/panel.py) | Low-level DOM helpers for reading/filling the order-ticket panel |
-| [tv_signal_trader/trading.py](tv_signal_trader/trading.py) | All TradingView-side actions: connecting/switching Tradovate accounts, `place_order()`, chart switching, waiting for a trade to close |
-| [tv_signal_trader/tradinggenerator.py](tv_signal_trader/tradinggenerator.py) | All TradingGenerator-side actions: login, generating a trade, reading its parameters, reporting the result |
+| [tv_signal_trader/trading.py](tv_signal_trader/trading.py) | All TradingView-side actions: connecting/switching Tradovate accounts and sub-accounts, `place_order()`, chart switching, waiting for a trade to close, reading account balance |
+| [tv_signal_trader/tradinggenerator.py](tv_signal_trader/tradinggenerator.py) | All TradingGenerator-side actions: login, company/portfolio tab switching, generating a trade, reading its parameters, reporting the result, removing a portfolio, saving a backup |
 | [tv_signal_trader/signal_source.py](tv_signal_trader/signal_source.py) | `run_web_loop()` — orchestrates the two above into the automatic trading loop |
-| [tv_signal_trader/status.py](tv_signal_trader/status.py) / [state.py](tv_signal_trader/state.py) / [monitor.py](tv_signal_trader/monitor.py) | `status.json` tracking (app running, login state) and the background login-poller |
+| [tv_signal_trader/status.py](tv_signal_trader/status.py) / [state.py](tv_signal_trader/state.py) / [monitor.py](tv_signal_trader/monitor.py) | `status.json` tracking (app/loop state, per-portfolio balances and trade history) and the background login/browser-alive poller |
 | [tv_signal_trader/cli.py](tv_signal_trader/cli.py) | Interactive command loop |
 
 ### 1. Browser setup
@@ -26,6 +26,7 @@ On startup ([tv_signal_trader/browser.py](tv_signal_trader/browser.py)):
 
 - Launches Chrome via `chromedriver` with a persistent profile folder (`tv_profile` in the user's home directory, resolved with `os.path.expanduser("~")`), so you only need to log into TradingView once. No explicit driver executable is configured — [Selenium Manager](https://www.selenium.dev/documentation/selenium_manager/) (built into Selenium 4.6+) detects the installed Chrome version and downloads a matching `chromedriver` automatically on first run, caching it for later ones.
 - Applies a few anti-bot-detection tweaks (custom user-agent, hides `navigator.webdriver`, fakes `navigator.plugins`/`navigator.languages`) so TradingView is less likely to flag the session as automated.
+- Sets Chrome to always download automatically without prompting, into `config.APP_DIR` (next to `.env`/`status.json`) — needed for TradingGenerator's "Save Backup" download (see the trading loop below) to work headlessly instead of stalling behind a native "Save As" dialog.
 - Opens the chart at `config.CHART_URL` (the default startup symbol — the `web` flow below switches it to whatever symbol the signal actually calls for).
 
 TradingGenerator credentials are read from a local `.env` file ([tv_signal_trader/config.py](tv_signal_trader/config.py)) — see "First-run setup" below for how that gets populated.
@@ -33,6 +34,11 @@ TradingGenerator credentials are read from a local `.env` file ([tv_signal_trade
 ### 2. First-run setup — [tv_signal_trader/setup_wizard.py](tv_signal_trader/setup_wizard.py)
 
 Before opening the browser, `ensure_configured()` checks `.env` for a TradingGenerator username/password, and for at least one Tradovate account. Anything missing is prompted for right there in the terminal and written back to `.env` — no manual file editing needed. Tradovate accounts are entered per prop firm: pick one from a fixed list (`config.PROP_FIRMS`) and enter its username/password; each firm gets at most one account, and `setup` lets you add/update as many as you need. The password prompts are plain, visible `input()` rather than masked ones: `getpass` reads via the Windows console API directly rather than stdin, which mishandled pasted text and hid what was typed with no way to catch the corruption. Already-configured values are left untouched and skipped silently. Type `setup` at the `>` prompt anytime to change any of them.
+
+Two more settings live in `.env` but aren't part of this wizard (edit `.env` directly, or start from the [release](#building-a-standalone-exe)'s `env.template`):
+
+- **Account balance limits** (`ACCOUNT_25K_MIN_BALANCE`/`ACCOUNT_25K_MAX_BALANCE`/`ACCOUNT_50K_MIN_BALANCE`/`ACCOUNT_50K_MAX_BALANCE`) — see step 5 below.
+- **Trading session window** (`SESSION_START_TIME`/`SESSION_END_TIME`, `HH:MM` 24-hour, Israel time) — see step 6 below. Leave unset to allow trading at any time.
 
 ### 3. Order placement — `place_order(driver, tp_ticks, sl_ticks, side, units)`
 
@@ -50,22 +56,47 @@ All typing is done character-by-character with randomized delays (`type_humanlik
 
 ### 4. The automatic trading loop — `run_web_loop(driver)`
 
-[tv_signal_trader/signal_source.py](tv_signal_trader/signal_source.py) orchestrates [tv_signal_trader/tradinggenerator.py](tv_signal_trader/tradinggenerator.py) and [tv_signal_trader/trading.py](tv_signal_trader/trading.py) into a loop, stoppable with Ctrl+C:
+[tv_signal_trader/signal_source.py](tv_signal_trader/signal_source.py) orchestrates [tv_signal_trader/tradinggenerator.py](tv_signal_trader/tradinggenerator.py) and [tv_signal_trader/trading.py](tv_signal_trader/trading.py) into a loop, stoppable with Ctrl+C. Most conditions that used to stop the loop no longer do — it keeps going through a locked portfolio, a cooldown, a temporarily-unusable account, or an outside-session-hours pause. It only stops for real if TradingGenerator login fails, the generate button disappears entirely, a trade's outcome genuinely can't be determined, or too many attempts in a row fail for reasons unrelated to any one portfolio:
 
 1. Finds the already-open TradingGenerator tab, or opens one (`tradinggenerator.open_tab`), logging in automatically if the session's expired.
-2. Clicks **GENERATE NEW TRADE** (`tradinggenerator.generate_trade`). If a "next trade to trade" hint is known from the previous iteration (company + portfolio), it proactively selects those tabs first; either way, if TradingGenerator pops up its "wrong account" warning instead (e.g. the very first trade of a run, when there's no hint yet), it reads the correct company/portfolio straight off the warning, cancels, switches, and retries once. Recognizes the daily-trade-limit "locked" state as a clean stopping point, and the button staying disabled during its post-trade cooldown (~30s, still reading "GENERATE NEW TRADE" the whole time) as a reason to stop rather than read stale parameters from the previous trade.
-3. Reads the TRADE PARAMETERS box — asset (e.g. `NQ`), direction (`LONG`/`SHORT`), contracts + size (e.g. `1 MINI`), stop-loss/take-profit in ticks — plus the active company/portfolio and the "Next Portfolio to Trade" hint for the following iteration (`tradinggenerator.read_trade_parameters`). If anything required is missing, reports **Trade Not Taken** back to TradingGenerator and stops.
-4. Switches to TradingView and resolves the ticker for that asset — `MINI` maps to the Micro contract (`NQ` → `MNQ`), with TradingView's `1!` continuous-contract suffix appended (e.g. `MNQ1!`) — then navigates the chart there (`trading.load_chart_for_signal`).
-5. Looks up the Tradovate account configured for that company (`config.TRADOVATE_ACCOUNTS`), connecting or switching (disconnect then reconnect) if a different company's login is currently active (`trading.connect_tradovate`/`disconnect_tradovate`), then selects the matching sub-account in the broker panel's account-selector dropdown (`trading.select_tradovate_account`) — a single Tradovate login can have several sub-accounts (e.g. multiple eval accounts), and this is what actually targets the right one.
-6. Calls `place_order(...)` with the parsed direction/ticks/contracts. If entry fails, reports **Trade Not Taken** back to TradingGenerator and stops.
-7. Waits for the position to close and determines which side it hit (`trading.wait_for_close`) by polling the broker's Orders table: a filled TP/SL order auto-cancels its linked sibling, so once one bracket leg shows `Status: Filled` and the other `Status: Cancelled`, that's a direct, reliable signal — no need to infer the outcome from price or P&L sign. Returns nothing (stopping the loop rather than guessing) if it times out or the bracket resolves without either leg actually filling, e.g. the position was closed manually.
-8. Reports the result back to TradingGenerator (`tradinggenerator.report_trade_result`) and loops back to step 2.
+2. Checks the trading session window (see below) — pauses here if outside it, resuming on its own once back inside.
+3. Clicks **GENERATE NEW TRADE** (`tradinggenerator.generate_trade`) for the "next trade to trade" hint from the previous iteration (company + portfolio), or whatever's currently selected if there's no hint yet:
+   - If TradingGenerator's own **cooldown** (~30s "Waiting for next trade") has the button disabled, this reads the countdown and waits it out rather than giving up.
+   - If it pops up its "wrong account" warning, this reads the correct company/portfolio straight off the warning, cancels, switches, and retries (up to twice).
+   - If the portfolio is **locked** (daily limit reached) or still mismatched after retrying, `signal_source._generate_next_trade` falls back to trying every other configured company/portfolio in turn (`tradinggenerator.list_all_candidates`), confirming "Proceed Anyway" instead of cancelling since that fallback choice is deliberate. If every one is currently unavailable, it doesn't give up — it clears what it ruled out and polls again every 60s (`PORTFOLIO_RETRY_INTERVAL_SECONDS`), since a daily limit resetting or a portfolio being re-added can make one tradeable again.
+4. Reads the TRADE PARAMETERS box — asset (e.g. `NQ`), direction (`LONG`/`SHORT`), contracts + size (e.g. `1 MINI`), stop-loss/take-profit in ticks — plus the active company/portfolio and the "Next Portfolio to Trade" hint for the following iteration (`tradinggenerator.read_trade_parameters`), retrying the read a couple of times if anything required comes back missing. If it's still missing after that, or if there's no Tradovate account configured for the resolved company, this reports **Trade Not Taken** and moves on to the next signal instead of stopping.
+5. Switches to TradingView and resolves the ticker for that asset — `MINI` maps to the Micro contract (`NQ` → `MNQ`), with TradingView's `1!` continuous-contract suffix appended (e.g. `MNQ1!`) — then navigates the chart there (`trading.load_chart_for_signal`).
+6. Looks up the Tradovate account configured for that company (`config.TRADOVATE_ACCOUNTS`), connecting or switching (disconnect then reconnect) if a different company's login is currently active (`trading.connect_tradovate`/`disconnect_tradovate`), then selects the matching sub-account in the broker panel's account-selector dropdown (`trading.select_tradovate_account`) — a single Tradovate login can have several sub-accounts (e.g. multiple eval accounts), and this is what actually targets the right one. A connect or sub-account-selection failure reports Trade Not Taken and moves on to another portfolio rather than stopping.
+7. Checks the account balance against its limits (see below) before risking a trade on it — if it's already outside range, removes the portfolio instead of trading.
+8. Calls `place_order(...)` with the parsed direction/ticks/contracts. A failure here reports **Trade Not Taken** and moves on to the next signal (capped by a consecutive-failure circuit breaker, `MAX_CONSECUTIVE_FAILURES`, since this one isn't tied to any particular portfolio).
+9. Waits for the position to close and determines which side it hit (`trading.wait_for_close`) by polling the broker's Orders table: a filled TP/SL order auto-cancels its linked sibling, so once one bracket leg shows `Status: Filled` and the other `Status: Cancelled`, that's a direct, reliable signal — no need to infer the outcome from price or P&L sign. Stops the loop without reporting a result (rather than guessing) if it times out or the bracket resolves without either leg actually filling, e.g. the position was closed manually.
+10. Checks the account balance again (see below), reports the result back to TradingGenerator (`tradinggenerator.report_trade_result`), and loops back to step 2.
 
-### 5. Status tracking — [tv_signal_trader/status.py](tv_signal_trader/status.py), [state.py](tv_signal_trader/state.py), [monitor.py](tv_signal_trader/monitor.py)
+### 5. Account balance limits — `trading.account_needs_removal(driver)`
 
-A `status.json` file (next to `.env`) tracks `app_running`, `tradingview_logged_in`, and `tradinggenerator_logged_in`, refreshed on startup/shutdown and by a background `LoginMonitor` thread that re-checks TradingView's login cookie every 15s (via the `Network.getAllCookies` CDP command, so it doesn't need to switch tabs and visibly hijack the browser). TradingGenerator's login status can only be determined by reading its tab's DOM, which *would* require disruptively switching to it, so that one's only updated on-demand whenever `web` actually uses it.
+Checked both right before opening a trade (step 7 above) and right after one closes (step 10) — the latter is the trustworthy read, since that's the one moment the account is certain to be active with no position open. There's no way to read which size (25K/50K/etc.) an account actually is from the page, so this guesses by reading the current balance (`trading.read_account_balance`) and picking whichever nominal size in `config.ACCOUNT_BALANCE_TIERS` it's numerically closest to — safe since the real ranges are far apart (a 50K account is never anywhere near a 25K account's ~$27K ceiling). If the balance is at/beyond that tier's min or max, the account's blown past its loss limit or hit its profit target, and `tradinggenerator.remove_portfolio` clicks the portfolio tab's delete "X" and confirms the follow-up modal, pulling it out of rotation.
 
-### 6. Interactive command loop
+The tiers' min/max are placeholder defaults, overridable per-tier via `.env` (`ACCOUNT_25K_MIN_BALANCE`/`ACCOUNT_25K_MAX_BALANCE`/`ACCOUNT_50K_MIN_BALANCE`/`ACCOUNT_50K_MAX_BALANCE`) — not part of the setup wizard, so edit `.env` directly.
+
+### 6. Trading session window — `config.session_window_status()`
+
+`SESSION_START_TIME`/`SESSION_END_TIME` in `.env` (`HH:MM`, 24-hour) bound when the loop will generate new trades, always interpreted in Israel time (`zoneinfo`, DST-aware — needs the `tzdata` package on Windows, which has no system IANA timezone database). Unset by default, so trading is allowed at any time unless both are configured.
+
+Checked once per loop iteration, before touching TradingGenerator at all: if outside the window, the loop sleeps until it opens (today's start if it hasn't started yet, tomorrow's if today's has already closed) and resumes automatically — it never stops for the day on its own. A trade already open when the window closes still runs through `wait_for_close` normally rather than being cut off mid-position. Once per day, right as the session transitions to "ended" (not "hasn't started yet"), it also saves a TradingGenerator backup (`tradinggenerator.save_backup`, clicking "Save Backup" — see the download-preferences note under "Browser setup" above).
+
+### 7. Status tracking — [tv_signal_trader/status.py](tv_signal_trader/status.py), [state.py](tv_signal_trader/state.py), [monitor.py](tv_signal_trader/monitor.py)
+
+A `status.json` file (next to `.env`) works as a monitoring/CRM-style record of what the bot is doing, without needing to watch the console:
+
+- **Run-level**: `app_running`, `tradingview_logged_in`, `tradinggenerator_logged_in`; `loop_state` (`idle`/`trading`/`waiting_for_session`/`waiting_for_portfolio`/`stopped`) with a `stop_reason` once stopped; `session_window` (today's configured start/end and current status); `last_backup_at`; `loop_started_at`; `last_error`/`last_error_at` from the last exception the loop caught.
+- **Per-portfolio**, under a `"portfolios"` dict keyed `"Company / Portfolio"` (`status.update_portfolio`/`record_trade_result`/`mark_portfolio_removed`/`mark_portfolio_unavailable`/`mark_portfolio_available`): latest `balance`/`tier_size`/`tier_range`; `last_trade` plus lifetime `trades_total`/`wins_total`/`losses_total`/`not_taken_total` counters (not reset daily — TradingGenerator's own on-page counters are the source of truth for "today"); `active: false` with `removed_at`/`removed_reason` once pulled from TradingGenerator; `unavailable_reason`/`unavailable_since` while sitting in the loop's skip-set (locked, no account configured, connect failed, etc.), cleared automatically once it trades successfully again.
+
+Refreshed on startup/shutdown, whenever `web` touches something worth recording, and by a background `LoginMonitor` thread that runs every `LOGIN_POLL_INTERVAL_SECONDS` (15s) and does double duty:
+
+- Re-checks TradingView's login cookie (via the `Network.getAllCookies` CDP command, so it doesn't need to switch tabs and visibly hijack the browser). TradingGenerator's login status can only be determined by reading its tab's DOM, which *would* require disruptively switching to it, so that one's only updated on-demand whenever `web` actually uses it.
+- Checks whether the browser is still alive (`browser.is_alive`, a `driver.window_handles` call wrapped in try/except). If every Chrome window has been closed, chromedriver's session is gone too, so this marks `status.json` stopped and hard-exits the whole process (`os._exit(0)` — a plain `sys.exit()` from this background thread wouldn't reach past the main thread's blocked `input()` call at the `>` prompt) instead of leaving the CLI sitting uselessly forever.
+
+### 8. Interactive command loop
 
 Running the script drops you into a `>` prompt that accepts:
 
@@ -101,24 +132,18 @@ Running the script drops you into a `>` prompt that accepts:
 For sharing this with a few trusted people without handing them the source, [Nuitka](https://nuitka.net/) compiles the whole app (Python → C → machine code) into a single `tv-signal-trader.exe`. This is obfuscation, not real security — treat it as raising the bar for casual inspection, not as a place to store secrets. No credentials are ever compiled in: `.env` and `status.json` are read from/written next to wherever the `.exe` itself lives at runtime ([tv_signal_trader/config.py](tv_signal_trader/config.py) resolves this via `sys.argv[0]`, not `__file__` — `--onefile` self-extracts to a new temp directory on every launch, so anything anchored to `__file__` would silently reset each run).
 
 1. `pip install -r requirements-build.txt`
-2. Run [build.ps1](build.ps1) (or the `nuitka` command inside it directly). Output is `dist/tv-signal-trader.exe`.
+2. Run [build.ps1](build.ps1) (or the `nuitka` command inside it directly). Output is `dist/tv-signal-trader.exe`. Includes `--include-package-data=tzdata`: the trading-session check needs Israel's IANA timezone data bundled in, since Windows has no system tz database and Nuitka doesn't pick up a pure-data package's files automatically.
 3. Hand the recipient just that one `.exe` — they'll get the same first-run setup wizard prompting for their own TradingGenerator credentials, and Selenium Manager still fetches chromedriver on their machine automatically.
 4. If Nuitka builds with MSVC (`cl.exe`) rather than MinGW64, it can't statically link the Windows C runtime, so recipients without it already installed will need the [Visual C++ Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe) — a small, extremely common one-time install.
-5. Don't commit `dist/` or the `.exe` into git — publish built binaries as [GitHub Releases](https://docs.github.com/en/repositories/releasing-projects-on-github) assets instead, so the repo itself doesn't accumulate large binary blobs.
+5. Don't commit `dist/` or the `.exe` into git — publish built binaries as [GitHub Releases](https://docs.github.com/en/repositories/releasing-projects-on-github) assets instead, so the repo itself doesn't accumulate large binary blobs. Attach an `env.template` alongside it (a copy of `.env` with credentials blanked out, listing every configurable field) so recipients who skip the setup wizard's prompts still see what `ACCOUNT_*_BALANCE`/`SESSION_*_TIME` keys exist — see [v0.2.0](https://github.com/YoniP31/tv-signal-trader/releases/tag/v0.2.0) for an example.
 
 ## Known limitations / things to watch out for
 
 - **UI-automation is brittle**: element lookup relies on a mix of stable IDs/`data-qa-id` attributes (where TradingView provides them) and screen coordinates/label text matching (where it doesn't). Any TradingView layout change, browser zoom level, or window-size change can break the latter.
 - **The "Ticks" bracket-mode selection is positional**: since the TP/SL dropdown's menu items don't expose a stable per-option identifier, "Ticks" is selected by assuming it's always the 2nd item in the menu — if TradingView ever reorders that menu, this breaks silently.
-- **Minimal error handling**: most failures just print a warning and move on rather than retrying or raising — check the console output after each command.
+- **Two failure modes still stop the loop outright rather than retrying**: TradingGenerator login failure, and a trade closing without either its TP or SL leg actually filling (e.g. the position was closed manually) — both are cases where guessing wrong (misreporting a result, or continuing on an unauthenticated session) is worse than stopping and needing a human to look. Everything else — locked/cooldown/misconfigured portfolios, missing trade parameters, a failed order attempt, being outside the trading session — is retried, rotated past, or waited out instead of raised. See "The automatic trading loop" above for specifics, and check `status.json`'s `stop_reason`/`last_error` after an unexpected stop.
+- **The portfolio-rotation fallback and cross-day session resume haven't been soak-tested** over a full multi-day run yet — in particular, whether clicking "Proceed Anyway" on TradingGenerator's wrong-account modal behaves as assumed (generates immediately, rather than requiring a second click) is inferred from the UI, not confirmed against a real locked-portfolio-with-fallback scenario.
 - **Places real orders**: `place_order()` clicks the live Buy/Sell confirm button. Test against a paper/demo Tradovate connection before pointing this at a live account.
-
-## Planned work
-
-Notes for follow-up work.
-
-- **Harden trade entry (steps 1-2 of `place_order()`)**: these are the oldest, least-robust part of the function — "select side" (`Shift+B`/`Shift+S`) and "select Market order" — and have no real failure detection today (step 2's click loop silently swallows failures via `except: pass`). Every step should verify it actually succeeded and abort the whole trade attempt if not, instead of continuing on to type into a panel that may not be in the expected state.
-- **TradingGenerator portfolio switching is limited to whatever's already showing as a tab**: `tradinggenerator.select_portfolio()` can only pick a portfolio that's already rendered in `#portfolioBar` — a firm with more than one portfolio tucked behind its "+N Portfolios" picker isn't handled yet. In practice this is covered by the "wrong account" warning fallback (TradingGenerator itself will say what's actually needed and the retry corrects it), but the picker itself was never opened programmatically.
 
 ## Repository docs
 
