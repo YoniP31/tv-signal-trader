@@ -119,10 +119,15 @@ def run_web_loop(driver):
 
         while True:
             session_status, session_wait = config.session_window_status()
-            status.update(session_window={
+            status.update(
+                session_window={
                 'start': config.SESSION_START_TIME.strftime('%H:%M') if config.SESSION_START_TIME else None,
                 'end': config.SESSION_END_TIME.strftime('%H:%M') if config.SESSION_END_TIME else None,
                 'status': session_status,
+            }, no_trade_window={
+                'start': config.NO_TRADE_START_TIME.strftime('%H:%M') if config.NO_TRADE_START_TIME else None,
+                'end': config.NO_TRADE_END_TIME.strftime('%H:%M') if config.NO_TRADE_END_TIME else None,
+                'active': config.in_no_trade_window(),
             })
             if session_status == 'waiting':
                 status.update(loop_state='waiting_for_session')
@@ -143,6 +148,14 @@ def run_web_loop(driver):
                 print(f"  Outside the trading session - waiting until "
                       f"{resume_at.strftime('%Y-%m-%d %H:%M')} Israel time ({int(session_wait)}s)...")
                 time.sleep(session_wait)
+                continue
+
+            if config.in_no_trade_window():
+                status.update(loop_state='no_trade_window')
+                print(f"  Inside the no-trade window ({config.NO_TRADE_START_TIME.strftime('%H:%M')}-"
+                      f"{config.NO_TRADE_END_TIME.strftime('%H:%M')} Israel time) - not generating new "
+                      f"trades; checking again in {PORTFOLIO_RETRY_INTERVAL_SECONDS}s...")
+                time.sleep(PORTFOLIO_RETRY_INTERVAL_SECONDS)
                 continue
 
             status.update(loop_state='trading')

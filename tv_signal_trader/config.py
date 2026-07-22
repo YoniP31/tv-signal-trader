@@ -119,6 +119,21 @@ def session_window_status(now=None):
     return 'waiting', (start_dt - now).total_seconds()
 
 
+def in_no_trade_window(now=None):
+    """Whether the current moment falls inside the configured mid-session
+    blackout (NO_TRADE_START_TIME/NO_TRADE_END_TIME), Israel time -- a
+    window where no *new* trades should be generated, distinct from the
+    overall SESSION_START_TIME/SESSION_END_TIME window it sits inside.
+
+    False if either bound is unset (no blackout configured). Assumes a
+    same-day window, same as session_window_status().
+    """
+    if NO_TRADE_START_TIME is None or NO_TRADE_END_TIME is None:
+        return False
+    current_time = (now or now_in_israel()).time()
+    return NO_TRADE_START_TIME <= current_time <= NO_TRADE_END_TIME
+
+
 def _load_env_file(path):
     values = {}
     if os.path.exists(path):
@@ -162,6 +177,7 @@ def _reload_env():
     global _env, TRADINGGENERATOR_USERNAME, TRADINGGENERATOR_PASSWORD
     global TRADOVATE_ACCOUNTS, ACCOUNT_BALANCE_TIERS
     global SESSION_START_TIME, SESSION_END_TIME
+    global NO_TRADE_START_TIME, NO_TRADE_END_TIME
     _env = _load_env_file(ENV_FILE)
     TRADINGGENERATOR_USERNAME = _env.get("TRADINGGENERATOR_USERNAME", "")
     TRADINGGENERATOR_PASSWORD = _env.get("TRADINGGENERATOR_PASSWORD", "")
@@ -189,6 +205,10 @@ def _reload_env():
     # Unset by default -- no session window means trading is allowed anytime.
     SESSION_START_TIME = _parse_time(_env.get("SESSION_START_TIME", ""))
     SESSION_END_TIME = _parse_time(_env.get("SESSION_END_TIME", ""))
+
+    # Unset by default -- no mid-session blackout unless both are configured.
+    NO_TRADE_START_TIME = _parse_time(_env.get("NO_TRADE_START_TIME", ""))
+    NO_TRADE_END_TIME = _parse_time(_env.get("NO_TRADE_END_TIME", ""))
 
 
 _reload_env()
