@@ -326,7 +326,9 @@ def run_web_loop(driver):
             # account, but check again here too in case that removal ever
             # failed -- opening a new trade on an already-blown/maxed-out
             # account is worse than a redundant check.
-            needs_removal, balance, tier_size, tier_range = trading.account_needs_removal(driver)
+            needs_removal, balance, tier_size, tier_range = trading.account_needs_removal(
+                driver, params['account_type']
+            )
             status.update_portfolio(company, params['portfolio'],
                                      balance=balance, tier_size=tier_size, tier_range=tier_range)
             if needs_removal:
@@ -378,7 +380,9 @@ def run_web_loop(driver):
             # is active and that no position is open, so it's the trustworthy
             # time to check whether this account has blown past its loss
             # limit or hit its profit target and needs pulling out of rotation.
-            needs_removal, balance, tier_size, tier_range = trading.account_needs_removal(driver)
+            needs_removal, balance, tier_size, tier_range = trading.account_needs_removal(
+                driver, params['account_type']
+            )
             status.update_portfolio(company, params['portfolio'],
                                      balance=balance, tier_size=tier_size, tier_range=tier_range)
 

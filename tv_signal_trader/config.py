@@ -57,9 +57,16 @@ PROP_FIRMS = [
 # are far apart (a 50K account is never anywhere near a 25K account's ~$27K
 # ceiling). Override any of these via .env once real per-size numbers are
 # confirmed; these are placeholders.
-_DEFAULT_ACCOUNT_TIER_RANGES = {
-    25000: (23000, 27000),
-    50000: (47500, 53000),
+#
+# MAX (the profit-target side) is split by account type (EVAL vs LIVE) since
+# those genuinely differ in practice; MIN (the max-loss side) is shared.
+_DEFAULT_ACCOUNT_TIER_MIN = {
+    25000: 23000,
+    50000: 47500,
+}
+_DEFAULT_ACCOUNT_TIER_MAX = {
+    'EVAL': {25000: 27000, 50000: 53000},
+    'LIVE': {25000: 27000, 50000: 53500},
 }
 
 
@@ -192,15 +199,18 @@ def _reload_env():
             TRADOVATE_ACCOUNTS[company] = {"username": username, "password": password}
 
     ACCOUNT_BALANCE_TIERS = {}
-    for size, (default_min, default_max) in _DEFAULT_ACCOUNT_TIER_RANGES.items():
+    for size, default_min in _DEFAULT_ACCOUNT_TIER_MIN.items():
         prefix = f"ACCOUNT_{size // 1000}K"
         # `or default` (not a dict-get default) so a present-but-blank line
         # in .env -- e.g. a commented-out template value someone uncommented
         # without filling in -- falls back cleanly instead of `float('')`
         # raising.
         min_val = float(_env.get(f"{prefix}_MIN_BALANCE") or default_min)
-        max_val = float(_env.get(f"{prefix}_MAX_BALANCE") or default_max)
-        ACCOUNT_BALANCE_TIERS[size] = (min_val, max_val)
+        max_by_type = {}
+        for account_type, defaults in _DEFAULT_ACCOUNT_TIER_MAX.items():
+            default_max = defaults[size]
+            max_by_type[account_type] = float(_env.get(f"{prefix}_MAX_BALANCE_{account_type}") or default_max)
+        ACCOUNT_BALANCE_TIERS[size] = {'min': min_val, 'max': max_by_type}
 
     # Unset by default -- no session window means trading is allowed anytime.
     SESSION_START_TIME = _parse_time(_env.get("SESSION_START_TIME", ""))

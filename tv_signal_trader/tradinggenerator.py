@@ -194,6 +194,15 @@ def read_active_company_portfolio(driver):
     return company or None, portfolio or None
 
 
+def read_active_account_type(driver):
+    """Reads whether the currently active portfolio is an 'EVAL' or 'LIVE'
+    account, from the badge next to the portfolio title (#activeTypeBadge,
+    e.g. <span id="activeTypeBadge" class="active-type-badge live">LIVE</span>).
+    Returns the uppercased text, or None if it can't be read."""
+    raw = _extract_by_id(driver, "activeTypeBadge")
+    return raw.strip().upper() if raw else None
+
+
 def _click_visible(driver, selector, attempts=6):
     """Clicks the first currently-visible element matching `selector`,
     retrying briefly in case it hasn't rendered yet (e.g. a modal still
@@ -418,6 +427,7 @@ def read_trade_parameters(driver):
     tp_match = re.search(r'(\d+)\s*ticks', tp_raw, re.IGNORECASE)
 
     company, portfolio = read_active_company_portfolio(driver)
+    account_type = read_active_account_type(driver)
 
     next_company = _extract_by_class(driver, "next-acc-firm")
     next_portfolio = _extract_by_class(driver, "next-acc-account")
@@ -431,6 +441,7 @@ def read_trade_parameters(driver):
         'tp_ticks': int(tp_match.group(1)) if tp_match else None,
         'portfolio': portfolio,
         'company': company,
+        'account_type': account_type,
         'next_company': next_company or None,
         'next_portfolio': next_portfolio or None,
     }

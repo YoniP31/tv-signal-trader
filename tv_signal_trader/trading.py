@@ -668,7 +668,7 @@ def read_account_balance(driver):
         return None
 
 
-def account_needs_removal(driver, tiers=None):
+def account_needs_removal(driver, account_type, tiers=None):
     """Reads the current account balance and checks whether it's crossed
     outside its account-size tier's allowed range (e.g. below ~$47,500 or
     above ~$53,000 for a $50K account) -- the account's blown-past-max-loss
@@ -682,6 +682,13 @@ def account_needs_removal(driver, tiers=None):
     are far apart (a 50K account is never anywhere near a 25K account's
     ~$27K ceiling).
 
+    `account_type` ('EVAL'/'LIVE', see
+    tradinggenerator.read_active_account_type) picks which max applies for
+    that tier, since eval/live accounts have different profit targets. If
+    it can't be determined, falls back to the more permissive (higher) of
+    EVAL/LIVE for that tier rather than risk prematurely removing an
+    account we're unsure about.
+
     Call this right after a trade closes: that's the one moment we're
     certain which account is active and that no position is open, so the
     balance reading is trustworthy.
@@ -689,18 +696,27 @@ def account_needs_removal(driver, tiers=None):
     Returns (needs_removal, balance, tier_size, tier_range):
       - needs_removal: True/False, or None if the balance couldn't be read
       - balance: the balance just read, or None
-      - tier_size/tier_range: the account-size tier it was matched against
-        (its nominal size, and its (min, max) allowed range), or
-        (None, None) if the balance couldn't be read
+      - tier_size: the account-size tier it was matched against (its
+        nominal size), or None if the balance couldn't be read
+      - tier_range: {'min': float, 'max': float} -- the min, and the max
+        actually resolved for `account_type` (or the fallback) -- or None
+        if the balance couldn't be read
     """
     tiers = tiers if tiers is not None else config.ACCOUNT_BALANCE_TIERS
     balance = read_account_balance(driver)
     if balance is None:
         return None, None, None, None
     nearest_size = min(tiers, key=lambda size: abs(balance - size))
-    tier_range = tiers[nearest_size]
-    min_threshold, max_threshold = tier_range
-    print(f"  Account balance: {balance:.2f} (closest tier: {nearest_size}, "
+    tier = tiers[nearest_size]
+    min_threshold = tier['min']
+    if account_type in tier['max']:
+        max_threshold = tier['max'][account_type]
+    else:
+        print(f"  [WARN] Unknown account type '{account_type}' - using the more permissive "
+              "EVAL/LIVE max for this tier.")
+        max_threshold = max(tier['max'].values())
+    tier_range = {'min': min_threshold, 'max': max_threshold}
+    print(f"  Account balance: {balance:.2f} (closest tier: {nearest_size} {account_type or '?'}, "
           f"allowed range: {min_threshold:.2f} - {max_threshold:.2f})")
     needs_removal = balance <= min_threshold or balance >= max_threshold
     if needs_removal:
