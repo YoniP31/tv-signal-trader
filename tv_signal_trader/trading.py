@@ -293,6 +293,42 @@ def select_tradovate_account(driver, account_name, timeout=10):
     return False
 
 
+def list_tradovate_accounts(driver):
+    """Names of every Tradovate sub-account under the currently connected
+    login, read from the broker panel's account-selector dropdown -- opens
+    it to read the list, then closes it again."""
+    if not _ensure_broker_panel_open(driver):
+        print("  FAILED: could not open the broker panel to list accounts.")
+        return []
+
+    try:
+        selector_btn = driver.find_element(By.CSS_SELECTOR, '[data-qa-id="account-selector"]')
+    except Exception:
+        print("  FAILED: account-selector button not found.")
+        return []
+
+    driver.execute_script("arguments[0].click();", selector_btn)
+    humanize.long_pause(0.6, 1.0)
+
+    try:
+        dropdown = driver.find_element(By.CSS_SELECTOR, '[data-qa-id="account-dropdown"]')
+    except Exception:
+        print("  FAILED: account-dropdown list did not open.")
+        return []
+
+    names = [
+        name_el.text.strip()
+        for name_el in dropdown.find_elements(By.CSS_SELECTOR, '[data-qa-id^="account-name-"]')
+        if name_el.text.strip()
+    ]
+
+    # Close the dropdown again rather than leaving it open.
+    driver.execute_script("arguments[0].click();", selector_btn)
+    humanize.long_pause(0.3, 0.6)
+
+    return names
+
+
 def resolve_symbol(asset, contract_size):
     """Maps a TradingGenerator asset/size to a TradingView continuous-futures
     ticker, e.g. ("NQ", "MINI") -> "MNQ1!". "1!" is TradingView's standard

@@ -33,6 +33,56 @@ def _report_not_taken(driver, params):
         )
 
 
+def _sweep_liquidated_accounts(driver, web_tab, tv_tab, connected_company):
+    """Once a day: for each company with a Tradovate account configured,
+    compares TradingGenerator's portfolios against that company's actual
+    Tradovate sub-accounts, and removes any TradingGenerator portfolio
+    whose account is no longer there -- it's been liquidated on the broker
+    side.
+
+    Returns whichever company's Tradovate login is connected once the sweep
+    finishes (not necessarily the one passed in), so the caller's own
+    connected_company tracking stays accurate.
+    """
+    print("\n[SWEEP] Checking for liquidated accounts...")
+    driver.switch_to.window(web_tab)
+    companies = tg.list_companies(driver)
+
+    for company in companies:
+        account = config.TRADOVATE_ACCOUNTS.get(company)
+        if account is None:
+            continue  # nothing to reconcile this company's portfolios against
+
+        tg.select_company(driver, company)
+        tg_portfolios = tg.list_portfolios(driver)
+
+        driver.switch_to.window(tv_tab)
+        if company != connected_company or not trading.is_tradovate_connected(driver):
+            if trading.is_tradovate_connected(driver):
+                trading.disconnect_tradovate(driver)
+            if not trading.connect_tradovate(driver, account['username'], account['password']):
+                print(f"  [WARN] Could not connect to Tradovate for '{company}' - skipping sweep for it.")
+                connected_company = None
+                driver.switch_to.window(web_tab)
+                continue
+            connected_company = company
+        tradovate_accounts = trading.list_tradovate_accounts(driver)
+        driver.switch_to.window(web_tab)
+
+        for portfolio in tg_portfolios:
+            if portfolio not in tradovate_accounts:
+                print(f"  [WARN] '{company} / {portfolio}' not found in its Tradovate account "
+                      "list - removing (liquidated).")
+                tg.select_company(driver, company)
+                tg.remove_portfolio(driver, portfolio)
+                status.mark_portfolio_removed(
+                    company, portfolio, 'liquidated (missing from Tradovate account list)'
+                )
+
+    print("[SWEEP] Done.")
+    return connected_company
+
+
 def _generate_next_trade(driver, next_company, next_portfolio, unavailable):
     """Tries to generate a trade for the hinted next_company/next_portfolio
     (or, if there's no hint yet, whatever's currently selected). If that
@@ -112,6 +162,7 @@ def run_web_loop(driver):
     unavailable = set()
     consecutive_failures = 0
     last_backup_date = None
+    last_sweep_date = None
     status.update(loop_state='trading', loop_started_at=status.timestamp(), stop_reason=None)
     try:
         web_tab = tg.open_tab(driver, tv_tab)
@@ -157,6 +208,12 @@ def run_web_loop(driver):
                       f"trades; checking again in {PORTFOLIO_RETRY_INTERVAL_SECONDS}s...")
                 time.sleep(PORTFOLIO_RETRY_INTERVAL_SECONDS)
                 continue
+
+            today = config.now_in_israel().date()
+            if last_sweep_date != today:
+                connected_company = _sweep_liquidated_accounts(driver, web_tab, tv_tab, connected_company)
+                status.update(last_sweep_at=status.timestamp())
+                last_sweep_date = today
 
             status.update(loop_state='trading')
             driver.switch_to.window(web_tab)
