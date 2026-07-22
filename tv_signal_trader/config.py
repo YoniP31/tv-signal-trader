@@ -69,6 +69,13 @@ _DEFAULT_ACCOUNT_TIER_MAX = {
     'LIVE': {25000: 27000, 50000: 53500},
 }
 
+# When a trade's take-profit would push the account's balance past its max
+# (see trading.adjust_tp_for_max_balance), the TP is capped so the result
+# lands at max + a random buffer in this $ range instead -- looks more
+# natural than landing exactly on the max every time. Overridable via
+# TP_CAP_BUFFER_MIN/TP_CAP_BUFFER_MAX in .env.
+_DEFAULT_TP_CAP_BUFFER_RANGE = (50, 200)
+
 
 ENV_FILE = os.path.join(APP_DIR, ".env")
 
@@ -185,6 +192,7 @@ def _reload_env():
     global TRADOVATE_ACCOUNTS, ACCOUNT_BALANCE_TIERS
     global SESSION_START_TIME, SESSION_END_TIME
     global NO_TRADE_START_TIME, NO_TRADE_END_TIME
+    global TP_CAP_BUFFER_RANGE
     _env = _load_env_file(ENV_FILE)
     TRADINGGENERATOR_USERNAME = _env.get("TRADINGGENERATOR_USERNAME", "")
     TRADINGGENERATOR_PASSWORD = _env.get("TRADINGGENERATOR_PASSWORD", "")
@@ -219,6 +227,12 @@ def _reload_env():
     # Unset by default -- no mid-session blackout unless both are configured.
     NO_TRADE_START_TIME = _parse_time(_env.get("NO_TRADE_START_TIME", ""))
     NO_TRADE_END_TIME = _parse_time(_env.get("NO_TRADE_END_TIME", ""))
+
+    default_buffer_min, default_buffer_max = _DEFAULT_TP_CAP_BUFFER_RANGE
+    TP_CAP_BUFFER_RANGE = (
+        float(_env.get("TP_CAP_BUFFER_MIN") or default_buffer_min),
+        float(_env.get("TP_CAP_BUFFER_MAX") or default_buffer_max),
+    )
 
 
 _reload_env()

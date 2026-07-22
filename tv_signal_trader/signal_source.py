@@ -344,6 +344,12 @@ def run_web_loop(driver):
 
             status.mark_portfolio_available(company, params['portfolio'])
 
+            adjusted_tp_ticks = trading.adjust_tp_for_max_balance(
+                balance, params['tp_ticks'], params['tp_dollars'], tier_range['max']
+            )
+            if adjusted_tp_ticks != params['tp_ticks']:
+                params['tp_ticks'] = adjusted_tp_ticks
+
             print(f"\n  Executing: {direction.upper()} | TP={params['tp_ticks']} ticks | "
                   f"SL={params['sl_ticks']} ticks | contracts={params['contracts']}")
             entered = trading.place_order(

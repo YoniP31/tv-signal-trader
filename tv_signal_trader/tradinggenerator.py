@@ -411,6 +411,19 @@ def _extract_by_class(driver, class_name):
         return None
 
 
+def _extract_dollar_amount(driver, element_id):
+    """Parses the leading "$X,XXX" dollar amount out of an element's text
+    (e.g. #takeProfitSub's "$1,500  ·  $5.00/tick"). Returns a float, or
+    None if the element or a dollar amount in it can't be found."""
+    raw = _extract_by_id(driver, element_id)
+    if not raw:
+        return None
+    match = re.search(r'\$([\d,]+(?:\.\d+)?)', raw)
+    if not match:
+        return None
+    return float(match.group(1).replace(',', ''))
+
+
 def read_trade_parameters(driver):
     """Reads the TRADE PARAMETERS box (asset/direction/contracts/SL/TP), the
     active portfolio/company, and the "Next Portfolio to Trade" hint (which
@@ -428,6 +441,7 @@ def read_trade_parameters(driver):
 
     company, portfolio = read_active_company_portfolio(driver)
     account_type = read_active_account_type(driver)
+    tp_dollars = _extract_dollar_amount(driver, "takeProfitSub")
 
     next_company = _extract_by_class(driver, "next-acc-firm")
     next_portfolio = _extract_by_class(driver, "next-acc-account")
@@ -439,6 +453,7 @@ def read_trade_parameters(driver):
         'contract_size': re.sub(r'[\d\s]', '', contracts_raw) or None,
         'sl_ticks': int(sl_match.group(1)) if sl_match else None,
         'tp_ticks': int(tp_match.group(1)) if tp_match else None,
+        'tp_dollars': tp_dollars,
         'portfolio': portfolio,
         'company': company,
         'account_type': account_type,

@@ -1,3 +1,4 @@
+import random
 import time
 
 from selenium.webdriver.common.by import By
@@ -722,3 +723,33 @@ def account_needs_removal(driver, account_type, tiers=None):
     if needs_removal:
         print(f"  [WARN] Account balance {balance:.2f} is outside its allowed range.")
     return needs_removal, balance, nearest_size, tier_range
+
+
+def adjust_tp_for_max_balance(balance, tp_ticks, tp_dollars, max_balance, buffer_range=None):
+    """If hitting this trade's take-profit would push the account's balance
+    past `max_balance`, caps tp_ticks so the resulting balance instead lands
+    at max_balance + a random buffer within `buffer_range` (dollars) --
+    clearing the target by a small, randomized amount rather than
+    overshooting it by however much the original TP happened to be worth.
+
+    Pure function, no DOM access -- `tp_dollars` (the $ value of the
+    current tp_ticks, e.g. from TradingGenerator's own displayed figure) is
+    used to derive $-per-tick, rather than needing a separate per-asset
+    tick-value table. Returns tp_ticks unchanged if it wouldn't cross
+    max_balance, or if tp_ticks/tp_dollars aren't usable (e.g. zero).
+
+    Never returns less than 1 tick.
+    """
+    buffer_range = buffer_range if buffer_range is not None else config.TP_CAP_BUFFER_RANGE
+    if not tp_ticks or not tp_dollars:
+        return tp_ticks
+    if balance + tp_dollars <= max_balance:
+        return tp_ticks
+    dollar_per_tick = tp_dollars / tp_ticks
+    buffer = random.uniform(*buffer_range)
+    target_profit = (max_balance + buffer) - balance
+    adjusted_ticks = max(1, round(target_profit / dollar_per_tick))
+    print(f"  TP would push balance past its max ({balance:.2f} + {tp_dollars:.2f} > "
+          f"{max_balance:.2f}) - capping TP from {tp_ticks} to {adjusted_ticks} ticks "
+          f"(buffer ${buffer:.2f} above max).")
+    return adjusted_ticks
