@@ -490,13 +490,13 @@ def place_order(driver, tp_ticks=150, sl_ticks=150, side="buy", units=1):
     # the entry and both limits went through -- not just that we clicked
     # buttons that looked right.
     print("\n[9] Verifying the trade and TP/SL orders are live...")
-    if not _click_orders_tab(driver):
+    if not click_orders_tab(driver):
         print("  FAILED: could not open the broker panel/Orders tab. Aborting.")
         return False
     tp_id = sl_id = None
     for _ in range(5):
         humanize.pause(1.0, 1.5)
-        bracket = _find_working_bracket(driver)
+        bracket = find_working_bracket(driver)
         tp_id, sl_id = bracket.get('tp'), bracket.get('sl')
         if tp_id and sl_id:
             break
@@ -534,7 +534,7 @@ def _ensure_broker_panel_open(driver):
     return toggle.get_attribute("aria-label") != "Open panel"
 
 
-def _click_orders_tab(driver):
+def click_orders_tab(driver):
     """Opens the broker panel if it's collapsed, then clicks the 'Orders'
     tab (a stable element id, not text-matched) so its table is rendered."""
     if not _ensure_broker_panel_open(driver):
@@ -548,16 +548,17 @@ def _click_orders_tab(driver):
     return True
 
 
-def _find_working_bracket(driver):
+def find_working_bracket(driver):
     """Finds the data-row-id of the currently 'Working' Take Profit and Stop
-    Loss orders in the (already-open) Orders table.
+    Loss orders in the (already-open) Orders table, for whichever Tradovate
+    sub-account is currently selected.
 
     The table keeps every historical order, including already-resolved
     brackets from earlier trades, so matching by Type text alone isn't
     enough -- filtering to Status 'working' is what scopes this to the
-    live bracket (this bot only ever has one position open at a time, so
-    at most one Take Profit and one Stop Loss order can be 'working'
-    simultaneously).
+    live bracket. At most one position can ever be open per sub-account (one
+    trade per portfolio), so at most one Take Profit and one Stop Loss order
+    can be 'working' simultaneously for the currently-selected account.
     """
     result = driver.execute_script("""
         var rows = document.querySelectorAll('tr[data-row-id]');
@@ -591,6 +592,34 @@ def _read_order_status(driver, row_id):
     """, row_id)
 
 
+def check_bracket_status(driver, tp_id, sl_id):
+    """Checks a specific, already-known TP/SL bracket pair's current status
+    (by data-row-id) in the (already-open) Orders table for whichever
+    Tradovate sub-account is currently selected.
+
+    A filled TP/SL order auto-cancels its linked sibling, so that Status is
+    a direct, reliable signal on its own -- no need to infer the outcome
+    from price or P&L sign (same reasoning as wait_for_close, generalized
+    here to a specific bracket pair rather than "whatever's working now",
+    so callers tracking several concurrent positions can check each one by
+    its own IDs instead of only ever the single currently-working bracket).
+
+    Returns 'tp' (take profit filled), 'sl' (stop loss filled),
+    'manual_close' (both resolved without either filling -- the position
+    was closed outside of our own TP/SL, e.g. manually or via liquidation),
+    or 'open' (still working).
+    """
+    tp_status = _read_order_status(driver, tp_id)
+    sl_status = _read_order_status(driver, sl_id)
+    if tp_status == 'filled':
+        return 'tp'
+    if sl_status == 'filled':
+        return 'sl'
+    if tp_status not in (None, 'working') and sl_status not in (None, 'working'):
+        return 'manual_close'
+    return 'open'
+
+
 def wait_for_close(driver, timeout=None, poll_interval=None):
     """Polls the broker's Orders table until the take-profit or stop-loss
     bracket order fills, returning 'tp' or 'sl'.
@@ -612,11 +641,11 @@ def wait_for_close(driver, timeout=None, poll_interval=None):
     poll_interval = poll_interval if poll_interval is not None else config.TRADE_CLOSE_POLL_INTERVAL_SECONDS
 
     print(f"  Waiting for the position to close (checking every {poll_interval}s)...")
-    if not _click_orders_tab(driver):
+    if not click_orders_tab(driver):
         print("  Could not open the broker panel/Orders tab.")
         return None
 
-    bracket = _find_working_bracket(driver)
+    bracket = find_working_bracket(driver)
     tp_id, sl_id = bracket.get('tp'), bracket.get('sl')
     if not tp_id or not sl_id:
         print(f"  Could not find the working TP/SL bracket orders (tp={tp_id}, sl={sl_id}).")

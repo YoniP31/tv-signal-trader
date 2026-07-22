@@ -424,6 +424,30 @@ def _extract_dollar_amount(driver, element_id):
     return float(match.group(1).replace(',', ''))
 
 
+def read_eval_portfolios(driver):
+    """Reads TradingGenerator's "Taken in the following portfolios" list
+    (#evalPortfoliosBox / #evalPortfoliosList's .eval-p-chip spans) -- when
+    visible, this signal should be opened on *every* one of these
+    portfolios (all the same company), not just the single currently-active
+    one -- the currently-active portfolio is itself included in this list,
+    not listed separately from it.
+
+    Returns an empty list if the box isn't showing (a normal single-
+    portfolio signal).
+    """
+    try:
+        box = driver.find_element(By.ID, "evalPortfoliosBox")
+    except Exception:
+        return []
+    if not box.is_displayed():
+        return []
+    return [
+        chip.text.strip()
+        for chip in box.find_elements(By.CSS_SELECTOR, ".eval-p-chip")
+        if chip.text.strip()
+    ]
+
+
 def read_trade_parameters(driver):
     """Reads the TRADE PARAMETERS box (asset/direction/contracts/SL/TP), the
     active portfolio/company, and the "Next Portfolio to Trade" hint (which
@@ -445,6 +469,7 @@ def read_trade_parameters(driver):
 
     next_company = _extract_by_class(driver, "next-acc-firm")
     next_portfolio = _extract_by_class(driver, "next-acc-account")
+    eval_portfolios = read_eval_portfolios(driver)
 
     return {
         'asset': asset,
@@ -457,6 +482,7 @@ def read_trade_parameters(driver):
         'portfolio': portfolio,
         'company': company,
         'account_type': account_type,
+        'eval_portfolios': eval_portfolios,
         'next_company': next_company or None,
         'next_portfolio': next_portfolio or None,
     }

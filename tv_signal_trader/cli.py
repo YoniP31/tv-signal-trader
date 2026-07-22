@@ -2,6 +2,7 @@ from . import browser
 from . import config
 from . import humanize
 from . import monitor
+from . import multi_signal_source
 from . import setup_wizard
 from . import signal_source
 from . import state
@@ -29,13 +30,18 @@ def main():
 
         login_monitor.start()
 
-        print("\nCommands: 'web', 'buy', 'sell', 'connect_tradovate'," \
+        print("\nCommands: 'web', 'web_multi', 'buy', 'sell', 'connect_tradovate'," \
         " 'disconnect_tradovate', 'setup', 'quit'")
         while True:
             cmd = input("> ").strip().lower()
             with state.session.driver_lock:
                 if cmd == "web":
                     signal_source.run_web_loop(driver)
+                elif cmd == "web_multi":
+                    # Multi-position trading loop -- see multi_signal_source.py.
+                    # Still being built/verified step by step; 'web' is the
+                    # stable single-position path.
+                    multi_signal_source.run_web_loop_multi(driver)
                 elif cmd == "buy":
                     trading.place_order(driver, tp_ticks=150, sl_ticks=150, side="buy")
                 elif cmd == "sell":

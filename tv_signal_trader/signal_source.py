@@ -20,7 +20,7 @@ MAX_CONSECUTIVE_FAILURES = 5
 PORTFOLIO_RETRY_INTERVAL_SECONDS = 60
 
 
-def _report_not_taken(driver, params):
+def report_not_taken(driver, params):
     """Reports Trade Not Taken and, if we know which portfolio this was
     for, records it in status.json too."""
     tg.report_trade_result(driver, 'not_taken')
@@ -33,7 +33,7 @@ def _report_not_taken(driver, params):
         )
 
 
-def _sweep_liquidated_accounts(driver, web_tab, tv_tab, connected_company):
+def sweep_liquidated_accounts(driver, web_tab, tv_tab, connected_company):
     """Once a day: for each company with a Tradovate account configured,
     compares TradingGenerator's portfolios against that company's actual
     Tradovate sub-accounts, and removes any TradingGenerator portfolio
@@ -83,7 +83,7 @@ def _sweep_liquidated_accounts(driver, web_tab, tv_tab, connected_company):
     return connected_company
 
 
-def _generate_next_trade(driver, next_company, next_portfolio, unavailable):
+def generate_next_trade(driver, next_company, next_portfolio, unavailable):
     """Tries to generate a trade for the hinted next_company/next_portfolio
     (or, if there's no hint yet, whatever's currently selected). If that
     portfolio is locked, mismatched, or already known bad, falls back to
@@ -211,7 +211,7 @@ def run_web_loop(driver):
 
             today = config.now_in_israel().date()
             if last_sweep_date != today:
-                connected_company = _sweep_liquidated_accounts(driver, web_tab, tv_tab, connected_company)
+                connected_company = sweep_liquidated_accounts(driver, web_tab, tv_tab, connected_company)
                 status.update(last_sweep_at=status.timestamp())
                 last_sweep_date = today
 
@@ -225,7 +225,7 @@ def run_web_loop(driver):
                 status.update(loop_state='stopped', stop_reason='tradinggenerator_login_failed')
                 return
 
-            gen_outcome = _generate_next_trade(driver, next_company, next_portfolio, unavailable)
+            gen_outcome = generate_next_trade(driver, next_company, next_portfolio, unavailable)
             if gen_outcome == 'not_found':
                 print("  [FAIL] Could not generate a trade - stopping loop.")
                 status.update(loop_state='stopped', stop_reason='generate_button_not_found')
@@ -269,7 +269,7 @@ def run_web_loop(driver):
             if missing:
                 print(f"  [FAIL] Missing trade parameters ({', '.join(missing)}) after retries - "
                       "reporting Trade Not Taken and moving on.")
-                _report_not_taken(driver, params)
+                report_not_taken(driver, params)
                 consecutive_failures += 1
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                     print(f"  [FAIL] {consecutive_failures} consecutive failures - stopping loop.")
@@ -284,7 +284,7 @@ def run_web_loop(driver):
                 configured = ', '.join(config.TRADOVATE_ACCOUNTS) or 'none'
                 print(f"  [FAIL] No Tradovate account configured for company '{company}' "
                       f"(configured: {configured}) - run 'setup' to add it. Trying other portfolios...")
-                _report_not_taken(driver, params)
+                report_not_taken(driver, params)
                 unavailable.add((company, params['portfolio']))
                 status.mark_portfolio_unavailable(company, params['portfolio'], 'no Tradovate account configured')
                 humanize.long_pause(2, 3)
@@ -304,7 +304,7 @@ def run_web_loop(driver):
                           "trying other portfolios...")
                     connected_company = None
                     driver.switch_to.window(web_tab)
-                    _report_not_taken(driver, params)
+                    report_not_taken(driver, params)
                     unavailable.add((company, params['portfolio']))
                     status.mark_portfolio_unavailable(company, params['portfolio'], 'Tradovate connect failed')
                     humanize.long_pause(2, 3)
@@ -315,7 +315,7 @@ def run_web_loop(driver):
                 print(f"  [FAIL] Could not select Tradovate account '{params['portfolio']}' - "
                       "trying other portfolios...")
                 driver.switch_to.window(web_tab)
-                _report_not_taken(driver, params)
+                report_not_taken(driver, params)
                 unavailable.add((company, params['portfolio']))
                 status.mark_portfolio_unavailable(company, params['portfolio'], 'Tradovate sub-account not found')
                 humanize.long_pause(2, 3)
@@ -335,7 +335,7 @@ def run_web_loop(driver):
                 print(f"  [WARN] Account balance already outside its allowed range - "
                       f"removing '{params['portfolio']}' instead of trading.")
                 driver.switch_to.window(web_tab)
-                _report_not_taken(driver, params)
+                report_not_taken(driver, params)
                 tg.remove_portfolio(driver, params['portfolio'])
                 status.mark_portfolio_removed(company, params['portfolio'],
                                                'balance outside allowed range (blown/hit target)')
@@ -362,7 +362,7 @@ def run_web_loop(driver):
             if not entered:
                 print("\n[FAIL] Trade execution failed - reporting Trade Not Taken and moving on.")
                 driver.switch_to.window(web_tab)
-                _report_not_taken(driver, params)
+                report_not_taken(driver, params)
                 consecutive_failures += 1
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                     print(f"  [FAIL] {consecutive_failures} consecutive failures - stopping loop.")
