@@ -171,8 +171,13 @@ def _open_position(driver, web_tab, tv_tab, params, connected_company):
     range -- that removal is independent of this signal and happens
     regardless.
 
-    Returns (success, connected_company, ledger_entry). ledger_entry is
-    None on failure; otherwise the dict to store in open_positions.
+    Returns (outcome, connected_company, ledger_entry):
+      - outcome: 'opened' (ledger_entry is the dict to store in
+        open_positions), 'rejected' (the broker rejected the entry order
+        itself -- see trading.check_entry_rejected -- so this account
+        should be quarantined until the next session), or 'failed' (some
+        other failure, no quarantine implied). ledger_entry is None unless
+        outcome is 'opened'.
     """
     company = params['company']
     portfolio = params['portfolio']
@@ -183,11 +188,11 @@ def _open_position(driver, web_tab, tv_tab, params, connected_company):
     connected_company = _ensure_tradovate_connection(driver, company, connected_company)
     if connected_company is None:
         print(f"  [FAIL] Could not connect to Tradovate for '{company}'.")
-        return False, None, None
+        return 'failed', None, None
 
     if not trading.select_tradovate_account(driver, portfolio):
         print(f"  [FAIL] Could not select Tradovate account '{portfolio}'.")
-        return False, connected_company, None
+        return 'failed', connected_company, None
 
     needs_removal, balance, tier_size, tier_range = trading.account_needs_removal(driver, params['account_type'])
     status.update_portfolio(company, portfolio, balance=balance, tier_size=tier_size, tier_range=tier_range)
@@ -199,7 +204,7 @@ def _open_position(driver, web_tab, tv_tab, params, connected_company):
         tg.select_portfolio(driver, portfolio)
         tg.remove_portfolio(driver, portfolio)
         status.mark_portfolio_removed(company, portfolio, 'balance outside allowed range (blown/hit target)')
-        return False, connected_company, None
+        return 'failed', connected_company, None
 
     status.mark_portfolio_available(company, portfolio)
 
@@ -214,15 +219,18 @@ def _open_position(driver, web_tab, tv_tab, params, connected_company):
         driver, tp_ticks=tp_ticks, sl_ticks=params['sl_ticks'], side=direction, units=params['contracts'],
     )
     if not entered:
+        if trading.check_entry_rejected(driver):
+            print(f"  [WARN] Order for '{company} / {portfolio}' was rejected by the broker.")
+            return 'rejected', connected_company, None
         print("\n[FAIL] Trade execution failed.")
-        return False, connected_company, None
+        return 'failed', connected_company, None
 
     bracket = trading.find_working_bracket(driver)
     tp_id, sl_id = bracket.get('tp'), bracket.get('sl')
     if not tp_id or not sl_id:
         print(f"  [FAIL] Could not confirm bracket IDs after opening '{portfolio}' - "
               "can't track this position reliably.")
-        return False, connected_company, None
+        return 'failed', connected_company, None
 
     entry = {
         'tp_id': tp_id,
@@ -235,7 +243,7 @@ def _open_position(driver, web_tab, tv_tab, params, connected_company):
         'tp_ticks': tp_ticks,
     }
     print(f"\n[OK] '{company} / {portfolio}' opened and tracked.")
-    return True, connected_company, entry
+    return 'opened', connected_company, entry
 
 
 def run_web_loop_multi(driver):
@@ -467,22 +475,27 @@ def run_web_loop_multi(driver):
                 portfolio_eligibility = check_eligibility(company, portfolio, engaged_company, open_positions)
                 if portfolio_eligibility == 'eligible':
                     portfolio_params = dict(params, portfolio=portfolio)
-                    success, connected_company, entry = _open_position(
+                    open_outcome, connected_company, entry = _open_position(
                         driver, web_tab, tv_tab, portfolio_params, connected_company
                     )
-                    if success:
+                    if open_outcome == 'opened':
                         open_positions[(company, portfolio)] = entry
                         engaged_company = company
                         opened_any = True
                         continue
-                    print(f"  [FAIL] Could not open '{company} / {portfolio}'.")
+                    if open_outcome == 'rejected':
+                        print(f"  [WARN] Quarantining '{company} / {portfolio}' until the next session.")
+                        quarantined.add((company, portfolio))
+                        status.mark_portfolio_unavailable(company, portfolio, 'order_rejected')
+                    else:
+                        print(f"  [FAIL] Could not open '{company} / {portfolio}'.")
                 else:
                     print(f"  [WARN] '{company} / {portfolio}' isn't eligible right now "
                           f"({portfolio_eligibility}) - can't open it for this signal.")
 
-                # Not opened (either ineligible right now, or the open attempt
-                # failed) -- there's no later retry for this specific signal
-                # instance, so report Not Taken on this portfolio's own field.
+                # Not opened (ineligible, failed, or rejected) -- there's no
+                # later retry for this specific signal instance, so report
+                # Not Taken on this portfolio's own field.
                 print(f"  Reporting Trade Not Taken for '{company} / {portfolio}'.")
                 _report_not_taken_for(portfolio)
 

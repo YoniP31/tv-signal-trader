@@ -620,6 +620,33 @@ def check_bracket_status(driver, tp_id, sl_id):
     return 'open'
 
 
+def check_entry_rejected(driver):
+    """Checks whether the most recent Market entry order was rejected by
+    the broker -- call this when place_order() fails to confirm any
+    working TP/SL brackets, to tell a rejection apart from some other
+    failure (in which case no bracket orders were ever created at all,
+    confirmed via a real "Rejected" order: Type=Market, Status=Rejected,
+    no Take Profit/Stop Loss rows for it).
+
+    The Orders table lists newest first, so the first Type="Market" row is
+    the most recent entry attempt. Returns True if its Status is
+    "rejected", False if it's anything else (or no Market row is found).
+    """
+    result = driver.execute_script("""
+        var rows = document.querySelectorAll('tr[data-row-id]');
+        for (var i = 0; i < rows.length; i++) {
+            var typeCell = rows[i].querySelector('td[data-label="Type"]');
+            if (!typeCell) continue;
+            if ((typeCell.innerText || '').trim().toLowerCase() !== 'market') continue;
+            var statusCell = rows[i].querySelector('td[data-label="Status"]');
+            if (!statusCell) return false;
+            return (statusCell.innerText || '').trim().toLowerCase() === 'rejected';
+        }
+        return false;
+    """)
+    return bool(result)
+
+
 def wait_for_close(driver, timeout=None, poll_interval=None):
     """Polls the broker's Orders table until the take-profit or stop-loss
     bracket order fills, returning 'tp' or 'sl'.
