@@ -82,11 +82,17 @@ def _ensure_tradovate_connection(driver, company, connected_company):
     return company
 
 
-def _refresh_open_positions(driver, web_tab, tv_tab, open_positions, connected_company):
+def _refresh_open_positions(driver, web_tab, tv_tab, open_positions, connected_company, quarantined):
     """Checks every tracked open position's bracket status once, reporting
-    (or quarantining, for a manual close/liquidation -- full
-    quarantine-until-next-session tracking is a later step; for now this
-    just logs it and frees the slot) and removing any that have resolved.
+    (or quarantining, for a manual close/liquidation) and removing any that
+    have resolved.
+
+    A manual close/liquidation adds (company, portfolio) to `quarantined`
+    (mutated in place) -- that account shouldn't be traded again until the
+    next session day, since something closed its position outside of our
+    own TP/SL and we don't know why. The caller is responsible for actually
+    keeping quarantined portfolios out of rotation (see run_web_loop_multi)
+    and for clearing `quarantined` at the start of a new session day.
 
     Every portfolio -- including each one from a multi-portfolio signal, see
     read_eval_portfolios -- has its own independent "Trade Result" field in
@@ -128,8 +134,10 @@ def _refresh_open_positions(driver, web_tab, tv_tab, open_positions, connected_c
 
         if outcome == 'manual_close':
             print(f"  [WARN] '{company} / {portfolio}' appears to have been closed manually or "
-                  "liquidated (both TP/SL cancelled, neither filled) - no correct result to report.")
+                  "liquidated (both TP/SL cancelled, neither filled) - no correct result to report. "
+                  "Quarantining until the next session.")
             status.mark_portfolio_unavailable(company, portfolio, 'manual_close_or_liquidation')
+            quarantined.add((company, portfolio))
         else:
             tg.report_trade_result(driver, outcome)
             status.record_trade_result(
@@ -244,6 +252,13 @@ def run_web_loop_multi(driver):
     Session window, no-trade window, daily liquidated-account sweep, and
     daily backup all work the same way as run_web_loop() (see there for
     details) -- this reuses the same config/status plumbing.
+
+    A portfolio whose position closes via manual close/liquidation (see
+    _refresh_open_positions) is quarantined until the next session day:
+    added to `quarantined`, which gets folded into `unavailable` right
+    before every generate attempt so signal_source.generate_next_trade's
+    own rotation keeps steering clear of it regardless of `unavailable`'s
+    own clear/reset cycles, and gets reset alongside the daily sweep.
     """
     print("\n[WEB-MULTI] Starting automatic multi-position trading loop (Ctrl+C to stop)...")
     tv_tab = driver.current_window_handle
@@ -251,6 +266,7 @@ def run_web_loop_multi(driver):
     next_company = None
     next_portfolio = None
     unavailable = set()
+    quarantined = set()
     open_positions = {}
     engaged_company = None
     consecutive_failures = 0
@@ -274,9 +290,48 @@ def run_web_loop_multi(driver):
                     'active': config.in_no_trade_window(),
                 }
             )
+            today = config.now_in_israel().date()
+            if last_sweep_date != today:
+                connected_company = signal_source.sweep_liquidated_accounts(
+                    driver, web_tab, tv_tab, connected_company
+                )
+                status.update(last_sweep_at=status.timestamp())
+                last_sweep_date = today
+                if quarantined:
+                    print(f"  New session day - releasing {len(quarantined)} quarantined portfolio(s).")
+                    # Also drop them from `unavailable` itself -- otherwise a
+                    # released portfolio could stay excluded until the
+                    # unrelated exhaustion-retry cycle happens to clear it,
+                    # which might not be soon if other portfolios keep
+                    # trading fine in the meantime.
+                    unavailable.difference_update(quarantined)
+                    quarantined.clear()
+
+            # Always refresh open positions, regardless of the session/
+            # no-trade window below -- an already-open position doesn't stop
+            # just because we've stopped generating new ones; it needs to
+            # keep being checked (and reported/freed once it closes)
+            # wherever it is.
+            connected_company = _refresh_open_positions(
+                driver, web_tab, tv_tab, open_positions, connected_company, quarantined
+            )
+            if engaged_company and not any(c == engaged_company for c, _p in open_positions):
+                engaged_company = None
+            status.update(
+                open_positions=[f"{c} / {p}" for c, p in open_positions],
+                quarantined=[f"{c} / {p}" for c, p in quarantined],
+            )
+
             if session_status == 'waiting':
                 status.update(loop_state='waiting_for_session')
                 now = config.now_in_israel()
+                if open_positions:
+                    print(f"  Outside the trading session with {len(open_positions)} position(s) still "
+                          f"open - waiting for them to close (checking again in "
+                          f"{POSITION_WAIT_INTERVAL_SECONDS}s)...")
+                    time.sleep(POSITION_WAIT_INTERVAL_SECONDS)
+                    continue
+
                 if (config.SESSION_END_TIME and now.time() > config.SESSION_END_TIME
                         and last_backup_date != now.date()):
                     print("  Trading session ended for today - saving a TradingGenerator backup...")
@@ -293,26 +348,17 @@ def run_web_loop_multi(driver):
 
             if config.in_no_trade_window():
                 status.update(loop_state='no_trade_window')
+                if open_positions:
+                    print(f"  Inside the no-trade window with {len(open_positions)} position(s) still "
+                          f"open - waiting for them to close (checking again in "
+                          f"{POSITION_WAIT_INTERVAL_SECONDS}s)...")
+                    time.sleep(POSITION_WAIT_INTERVAL_SECONDS)
+                    continue
                 print(f"  Inside the no-trade window ({config.NO_TRADE_START_TIME.strftime('%H:%M')}-"
                       f"{config.NO_TRADE_END_TIME.strftime('%H:%M')} Israel time) - not generating new "
                       f"trades; checking again in {signal_source.PORTFOLIO_RETRY_INTERVAL_SECONDS}s...")
                 time.sleep(signal_source.PORTFOLIO_RETRY_INTERVAL_SECONDS)
                 continue
-
-            today = config.now_in_israel().date()
-            if last_sweep_date != today:
-                connected_company = signal_source.sweep_liquidated_accounts(
-                    driver, web_tab, tv_tab, connected_company
-                )
-                status.update(last_sweep_at=status.timestamp())
-                last_sweep_date = today
-
-            connected_company = _refresh_open_positions(
-                driver, web_tab, tv_tab, open_positions, connected_company
-            )
-            if engaged_company and not any(c == engaged_company for c, _p in open_positions):
-                engaged_company = None
-            status.update(open_positions=[f"{c} / {p}" for c, p in open_positions])
 
             eligibility = check_eligibility(next_company, next_portfolio, engaged_company, open_positions)
             if eligibility != 'eligible':
@@ -332,6 +378,10 @@ def run_web_loop_multi(driver):
                 status.update(loop_state='stopped', stop_reason='tradinggenerator_login_failed')
                 return
 
+            # Fold in quarantined portfolios every time (not just after a
+            # clear) so generate_next_trade's own rotation steers clear of
+            # them regardless of `unavailable`'s own clear/reset cycles.
+            unavailable.update(quarantined)
             gen_outcome = signal_source.generate_next_trade(driver, next_company, next_portfolio, unavailable)
             if gen_outcome == 'not_found':
                 print("  [FAIL] Could not generate a trade - stopping loop.")
