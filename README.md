@@ -16,7 +16,8 @@ The implementation lives in the [tv_signal_trader/](tv_signal_trader/) package, 
 | [tv_signal_trader/panel.py](tv_signal_trader/panel.py) | Low-level DOM helpers for reading/filling the order-ticket panel |
 | [tv_signal_trader/trading.py](tv_signal_trader/trading.py) | All TradingView-side actions: connecting/switching Tradovate accounts and sub-accounts, `place_order()`, chart switching, waiting for a trade to close, reading account balance |
 | [tv_signal_trader/tradinggenerator.py](tv_signal_trader/tradinggenerator.py) | All TradingGenerator-side actions: login, company/portfolio tab switching, generating a trade, reading its parameters, reporting the result, removing a portfolio, saving a backup |
-| [tv_signal_trader/signal_source.py](tv_signal_trader/signal_source.py) | `run_web_loop()` — orchestrates the two above into the automatic trading loop |
+| [tv_signal_trader/signal_source.py](tv_signal_trader/signal_source.py) | `run_web_loop()` — orchestrates the two above into the automatic trading loop (`web`) |
+| [tv_signal_trader/multi_signal_source.py](tv_signal_trader/multi_signal_source.py) | `run_web_loop_multi()` — the concurrent, multi-position trading loop (`web_multi`), see [docs/WEB_MULTI.md](docs/WEB_MULTI.md) |
 | [tv_signal_trader/status.py](tv_signal_trader/status.py) / [state.py](tv_signal_trader/state.py) / [monitor.py](tv_signal_trader/monitor.py) | `status.json` tracking (app/loop state, per-portfolio balances and trade history) and the background login/browser-alive poller |
 | [tv_signal_trader/cli.py](tv_signal_trader/cli.py) | Interactive command loop |
 
@@ -35,10 +36,11 @@ TradingGenerator credentials are read from a local `.env` file ([tv_signal_trade
 
 Before opening the browser, `ensure_configured()` checks `.env` for a TradingGenerator username/password, and for at least one Tradovate account. Anything missing is prompted for right there in the terminal and written back to `.env` — no manual file editing needed. Tradovate accounts are entered per prop firm: pick one from a fixed list (`config.PROP_FIRMS`) and enter its username/password; each firm gets at most one account, and `setup` lets you add/update as many as you need. The password prompts are plain, visible `input()` rather than masked ones: `getpass` reads via the Windows console API directly rather than stdin, which mishandled pasted text and hid what was typed with no way to catch the corruption. Already-configured values are left untouched and skipped silently. Type `setup` at the `>` prompt anytime to change any of them.
 
-Two more settings live in `.env` but aren't part of this wizard (edit `.env` directly, or start from the [release](#building-a-standalone-exe)'s `env.template`):
+A handful of settings live in `.env` but aren't part of this wizard — edit `.env` directly, or start from [docs/.env](docs/.env), a committed template listing every field with credentials blanked out:
 
-- **Account balance limits** (`ACCOUNT_25K_MIN_BALANCE`/`ACCOUNT_25K_MAX_BALANCE`/`ACCOUNT_50K_MIN_BALANCE`/`ACCOUNT_50K_MAX_BALANCE`) — see step 5 below.
+- **Account balance limits** (`ACCOUNT_25K_MIN_BALANCE`/`ACCOUNT_50K_MIN_BALANCE`, `ACCOUNT_25K_MAX_BALANCE_EVAL`/`_LIVE`/`ACCOUNT_50K_MAX_BALANCE_EVAL`/`_LIVE`) — see step 5 below.
 - **Trading session window** (`SESSION_START_TIME`/`SESSION_END_TIME`, `HH:MM` 24-hour, Israel time) — see step 6 below. Leave unset to allow trading at any time.
+- **No-trade window** (`NO_TRADE_START_TIME`/`NO_TRADE_END_TIME`) and **take-profit cap buffer** (`TP_CAP_BUFFER_MIN`/`TP_CAP_BUFFER_MAX`) — used by `web_multi`, see [docs/WEB_MULTI.md](docs/WEB_MULTI.md).
 
 ### 3. Order placement — `place_order(driver, tp_ticks, sl_ticks, side, units)`
 
@@ -76,7 +78,7 @@ All typing is done character-by-character with randomized delays (`type_humanlik
 
 Checked both right before opening a trade (step 7 above) and right after one closes (step 10) — the latter is the trustworthy read, since that's the one moment the account is certain to be active with no position open. There's no way to read which size (25K/50K/etc.) an account actually is from the page, so this guesses by reading the current balance (`trading.read_account_balance`) and picking whichever nominal size in `config.ACCOUNT_BALANCE_TIERS` it's numerically closest to — safe since the real ranges are far apart (a 50K account is never anywhere near a 25K account's ~$27K ceiling). If the balance is at/beyond that tier's min or max, the account's blown past its loss limit or hit its profit target, and `tradinggenerator.remove_portfolio` clicks the portfolio tab's delete "X" and confirms the follow-up modal, pulling it out of rotation.
 
-The tiers' min/max are placeholder defaults, overridable per-tier via `.env` (`ACCOUNT_25K_MIN_BALANCE`/`ACCOUNT_25K_MAX_BALANCE`/`ACCOUNT_50K_MIN_BALANCE`/`ACCOUNT_50K_MAX_BALANCE`) — not part of the setup wizard, so edit `.env` directly.
+The tiers' min/max are placeholder defaults, overridable per-tier via `.env` (`ACCOUNT_25K_MIN_BALANCE`/`ACCOUNT_50K_MIN_BALANCE`, plus `ACCOUNT_25K_MAX_BALANCE_EVAL`/`_LIVE`/`ACCOUNT_50K_MAX_BALANCE_EVAL`/`_LIVE` — the max side is split by account type since eval/live profit targets genuinely differ; `trading.account_needs_removal` reads which type via `tradinggenerator.read_active_account_type`) — not part of the setup wizard, so edit `.env` directly.
 
 ### 6. Trading session window — `config.session_window_status()`
 
@@ -103,10 +105,15 @@ Running the script drops you into a `>` prompt that accepts:
 | Command      | Effect                                                              |
 |--------------|----------------------------------------------------------------------|
 | `web`        | Runs `run_web_loop()` — the automatic trading loop (Ctrl+C to stop) |
+| `web_multi`  | Runs the multi-position trading loop — see below                     |
 | `buy`        | Places a manual buy with 150-tick TP/SL                              |
 | `sell`       | Places a manual sell with 150-tick TP/SL                             |
 | `setup`      | Re-run setup to change your TradingGenerator credentials or Tradovate accounts |
 | `quit`       | Closes the browser and exits                                         |
+
+### 9. Multi-position trading — `web_multi`
+
+A second automatic trading command, in [tv_signal_trader/multi_signal_source.py](tv_signal_trader/multi_signal_source.py), that can hold several positions open at once (one per portfolio, up to 3 per company, only one company "engaged" at a time) instead of `web`'s one-trade-at-a-time flow. `web` itself is untouched by this — the two are independent, side by side. Full details, plus how to test each piece, are in **[docs/WEB_MULTI.md](docs/WEB_MULTI.md)**.
 
 ## How to run it
 
@@ -135,16 +142,16 @@ For sharing this with a few trusted people without handing them the source, [Nui
 2. Run [build.ps1](build.ps1) (or the `nuitka` command inside it directly). Output is `dist/tv-signal-trader.exe`. Includes `--include-package-data=tzdata`: the trading-session check needs Israel's IANA timezone data bundled in, since Windows has no system tz database and Nuitka doesn't pick up a pure-data package's files automatically.
 3. Hand the recipient just that one `.exe` — they'll get the same first-run setup wizard prompting for their own TradingGenerator credentials, and Selenium Manager still fetches chromedriver on their machine automatically.
 4. If Nuitka builds with MSVC (`cl.exe`) rather than MinGW64, it can't statically link the Windows C runtime, so recipients without it already installed will need the [Visual C++ Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe) — a small, extremely common one-time install.
-5. Don't commit `dist/` or the `.exe` into git — publish built binaries as [GitHub Releases](https://docs.github.com/en/repositories/releasing-projects-on-github) assets instead, so the repo itself doesn't accumulate large binary blobs. Attach an `env.template` alongside it (a copy of `.env` with credentials blanked out, listing every configurable field) so recipients who skip the setup wizard's prompts still see what `ACCOUNT_*_BALANCE`/`SESSION_*_TIME` keys exist — see [v0.2.0](https://github.com/YoniP31/tv-signal-trader/releases/tag/v0.2.0) for an example.
+5. Don't commit `dist/` or the `.exe` into git — publish built binaries as [GitHub Releases](https://docs.github.com/en/repositories/releasing-projects-on-github) assets instead, so the repo itself doesn't accumulate large binary blobs. Attach a copy of [docs/.env](docs/.env) alongside it (already a committed template with credentials blanked out, listing every configurable field) so recipients who skip the setup wizard's prompts still see what keys exist — see [v0.2.0](https://github.com/YoniP31/tv-signal-trader/releases/tag/v0.2.0) for an earlier example.
 
 ## Known limitations / things to watch out for
 
 - **UI-automation is brittle**: element lookup relies on a mix of stable IDs/`data-qa-id` attributes (where TradingView provides them) and screen coordinates/label text matching (where it doesn't). Any TradingView layout change, browser zoom level, or window-size change can break the latter.
 - **The "Ticks" bracket-mode selection is positional**: since the TP/SL dropdown's menu items don't expose a stable per-option identifier, "Ticks" is selected by assuming it's always the 2nd item in the menu — if TradingView ever reorders that menu, this breaks silently.
-- **Two failure modes still stop the loop outright rather than retrying**: TradingGenerator login failure, and a trade closing without either its TP or SL leg actually filling (e.g. the position was closed manually) — both are cases where guessing wrong (misreporting a result, or continuing on an unauthenticated session) is worse than stopping and needing a human to look. Everything else — locked/cooldown/misconfigured portfolios, missing trade parameters, a failed order attempt, being outside the trading session — is retried, rotated past, or waited out instead of raised. See "The automatic trading loop" above for specifics, and check `status.json`'s `stop_reason`/`last_error` after an unexpected stop.
-- **The portfolio-rotation fallback and cross-day session resume haven't been soak-tested** over a full multi-day run yet — in particular, whether clicking "Proceed Anyway" on TradingGenerator's wrong-account modal behaves as assumed (generates immediately, rather than requiring a second click) is inferred from the UI, not confirmed against a real locked-portfolio-with-fallback scenario.
+- **Two failure modes still stop `web` outright rather than retrying**: TradingGenerator login failure, and a trade closing without either its TP or SL leg actually filling (e.g. the position was closed manually) — both are cases where guessing wrong (misreporting a result, or continuing on an unauthenticated session) is worse than stopping and needing a human to look. `web_multi` handles the manual-close case by quarantining that one portfolio instead of stopping everything (see [docs/WEB_MULTI.md](docs/WEB_MULTI.md)); TradingGenerator login failure still stops it too. Everything else — locked/cooldown/misconfigured portfolios, missing trade parameters, a failed order attempt, being outside the trading session — is retried, rotated past, or waited out instead of raised. Check `status.json`'s `stop_reason`/`last_error` after an unexpected stop.
 - **Places real orders**: `place_order()` clicks the live Buy/Sell confirm button. Test against a paper/demo Tradovate connection before pointing this at a live account.
 
 ## Repository docs
 
-- [GIT_SETUP.md](GIT_SETUP.md) — how to get set up with Git and the day-to-day commands (status/add/commit/push/pull) for contributing to this repo.
+- [docs/GIT_SETUP.md](docs/GIT_SETUP.md) — how to get set up with Git and the day-to-day commands (status/add/commit/push/pull) for contributing to this repo.
+- [docs/WEB_MULTI.md](docs/WEB_MULTI.md) — what `web_multi` does and how to test each of its behaviors.

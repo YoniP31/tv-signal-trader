@@ -27,6 +27,7 @@ env/
 # Secrets / local config
 .env
 *.env.local
+!docs/.env
 
 # OS cruft
 .DS_Store
