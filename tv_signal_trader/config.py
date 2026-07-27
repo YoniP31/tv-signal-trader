@@ -221,6 +221,7 @@ def _reload_env():
     global TP_CAP_BUFFER_RANGE
     global MAX_POSITIONS_PER_COMPANY
     global POSITION_POLL_RANGE, PORTFOLIO_RETRY_RANGE
+    global DAILY_PROFIT_LIMIT
     _env = _load_env_file(ENV_FILE)
     TRADINGGENERATOR_USERNAME = _env.get("TRADINGGENERATOR_USERNAME", "")
     TRADINGGENERATOR_PASSWORD = _env.get("TRADINGGENERATOR_PASSWORD", "")
@@ -277,6 +278,11 @@ def _reload_env():
         float(_env.get("PORTFOLIO_RETRY_MIN_SECONDS") or default_portfolio_retry_min),
         float(_env.get("PORTFOLIO_RETRY_MAX_SECONDS") or default_portfolio_retry_max),
     )
+
+    # web_multi only. Unset by default (no limit) -- an opt-in risk control,
+    # not a universal default like the balance tiers above.
+    daily_profit_limit_raw = _env.get("DAILY_PROFIT_LIMIT", "").strip()
+    DAILY_PROFIT_LIMIT = float(daily_profit_limit_raw) if daily_profit_limit_raw else None
 
 
 _reload_env()

@@ -43,6 +43,18 @@ ACCOUNT_50K_MAX_BALANCE_LIVE=53500
 
 **How to test:** temporarily set a MAX (or MIN) very close to an account's real current balance, run `web_multi`, and confirm it removes that portfolio from TradingGenerator instead of trading it. Remember to set the values back afterward.
 
+## Daily profit limit
+
+An optional per-account cap on today's profit, read from Tradovate's broker-panel Account Summary tab ("Total P/L", which resets daily on Tradovate's side). Once an account's Total P/L reaches the limit, that account stops opening new trades for the rest of the day — quarantined the same way as a manual close or a rejected order — but keeps reporting/monitoring any position already open normally. Set in `.env`:
+
+```
+DAILY_PROFIT_LIMIT=500
+```
+
+Leave commented out (the default) to disable it entirely.
+
+**How to test:** set the limit just below an account's current Total P/L, run `web_multi`, and confirm the console prints that the account hit its daily profit limit and is quarantined, rather than opening the next signal for it.
+
 ## Take-profit capping
 
 If a trade's take-profit would push an account's balance *past* its maximum, the bot shrinks the take-profit so the account instead lands just above the maximum — by a random amount between `TP_CAP_BUFFER_MIN` and `TP_CAP_BUFFER_MAX` dollars (default $50–$200) — rather than blowing far past it. This keeps profit-target accounts from wildly overshooting once they're close to passing.

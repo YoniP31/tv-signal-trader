@@ -137,6 +137,16 @@ def _refresh_open_positions(driver, web_tab, tv_tab, open_positions, connected_c
         )
         status.update_portfolio(company, portfolio, balance=balance, tier_size=tier_size, tier_range=tier_range)
 
+        # A manual close has no correct result to report at all (see below),
+        # so there's no point checking its daily profit -- it's already
+        # being quarantined regardless.
+        daily_limit_reached = False
+        if outcome != 'manual_close' and config.DAILY_PROFIT_LIMIT is not None:
+            if trading.click_account_summary_tab(driver):
+                total_pl = trading.read_total_pl(driver)
+                if total_pl is not None and total_pl >= config.DAILY_PROFIT_LIMIT:
+                    daily_limit_reached = True
+
         driver.switch_to.window(web_tab)
         tg.select_company(driver, company)
         tg.select_portfolio(driver, portfolio)
@@ -159,6 +169,11 @@ def _refresh_open_positions(driver, web_tab, tv_tab, open_positions, connected_c
                 status.mark_portfolio_removed(
                     company, portfolio, 'balance outside allowed range (blown/hit target)'
                 )
+            elif daily_limit_reached:
+                print(f"  [WARN] '{company} / {portfolio}' hit its daily profit limit - "
+                      "quarantining until the next session.")
+                status.mark_portfolio_unavailable(company, portfolio, 'daily_profit_limit_reached')
+                quarantined.add((company, portfolio))
 
         del open_positions[(company, portfolio)]
         print(f"  '{company} / {portfolio}' closed ({outcome}) - slot freed.")
@@ -184,9 +199,11 @@ def _open_position(driver, web_tab, tv_tab, params, connected_company):
       - outcome: 'opened' (ledger_entry is the dict to store in
         open_positions), 'rejected' (the broker rejected the entry order
         itself -- see trading.check_entry_rejected -- so this account
-        should be quarantined until the next session), or 'failed' (some
-        other failure, no quarantine implied). ledger_entry is None unless
-        outcome is 'opened'.
+        should be quarantined until the next session), 'daily_limit_reached'
+        (the account already hit config.DAILY_PROFIT_LIMIT -- also
+        quarantine until the next session, no trade attempted), or 'failed'
+        (some other failure, no quarantine implied). ledger_entry is None
+        unless outcome is 'opened'.
     """
     company = params['company']
     portfolio = params['portfolio']
@@ -216,6 +233,13 @@ def _open_position(driver, web_tab, tv_tab, params, connected_company):
         return 'failed', connected_company, None
 
     status.mark_portfolio_available(company, portfolio)
+
+    if config.DAILY_PROFIT_LIMIT is not None and trading.click_account_summary_tab(driver):
+        total_pl = trading.read_total_pl(driver)
+        if total_pl is not None and total_pl >= config.DAILY_PROFIT_LIMIT:
+            print(f"  [WARN] '{company} / {portfolio}' already hit its daily profit limit "
+                  f"({total_pl:.2f} >= {config.DAILY_PROFIT_LIMIT:.2f}) - not trading until the next session.")
+            return 'daily_limit_reached', connected_company, None
 
     tp_ticks = trading.adjust_tp_for_max_balance(
         balance, params['tp_ticks'], params['tp_dollars'], tier_range['max']
@@ -500,6 +524,11 @@ def run_web_loop_multi(driver):
                         print(f"  [WARN] Quarantining '{company} / {portfolio}' until the next session.")
                         quarantined.add((company, portfolio))
                         status.mark_portfolio_unavailable(company, portfolio, 'order_rejected')
+                    elif open_outcome == 'daily_limit_reached':
+                        print(f"  [WARN] Quarantining '{company} / {portfolio}' until the next session "
+                              "(daily profit limit reached).")
+                        quarantined.add((company, portfolio))
+                        status.mark_portfolio_unavailable(company, portfolio, 'daily_profit_limit_reached')
                     else:
                         print(f"  [FAIL] Could not open '{company} / {portfolio}'.")
                 else:

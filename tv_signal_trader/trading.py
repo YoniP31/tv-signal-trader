@@ -567,6 +567,45 @@ def click_orders_tab(driver):
     return True
 
 
+def click_account_summary_tab(driver):
+    """Opens the broker panel if it's collapsed, then clicks the 'Account
+    summary' tab (a stable element id, "summary", not text-matched) so its
+    Account Info row (Total P/L, Net Liq, etc.) is rendered."""
+    if not _ensure_broker_panel_open(driver):
+        return False
+    try:
+        driver.find_element(By.ID, "summary").click()
+    except Exception:
+        print("  Account summary tab not found")
+        return False
+    humanize.pause(0.5, 1.0)
+    return True
+
+
+def read_total_pl(driver):
+    """Reads the Account Summary tab's "Total P/L" value (e.g. 8.30, or a
+    negative loss) for the currently selected Tradovate account. Call
+    click_account_summary_tab first to make sure that tab is open.
+
+    Matched by data-label="Total P/L" on the Account Info row's cell, same
+    querySelector approach as the Orders table reads (find_working_bracket,
+    check_bracket_status) rather than TradingView's CSS-module class names,
+    which look build-specific.
+    """
+    result = driver.execute_script("""
+        var cell = document.querySelector('td[data-label="Total P/L"]');
+        return cell ? cell.innerText.trim() : null;
+    """)
+    if not result:
+        print("  Could not find the Total P/L field.")
+        return None
+    try:
+        return float(result.replace(',', ''))
+    except ValueError:
+        print(f"  Could not parse Total P/L from '{result}'.")
+        return None
+
+
 def find_working_bracket(driver):
     """Finds the data-row-id of the currently 'Working' Take Profit and Stop
     Loss orders in the (already-open) Orders table, for whichever Tradovate
