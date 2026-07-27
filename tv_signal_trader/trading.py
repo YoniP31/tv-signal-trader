@@ -332,10 +332,29 @@ def list_tradovate_accounts(driver):
 
 def resolve_symbol(asset, contract_size):
     """Maps a TradingGenerator asset/size to a TradingView continuous-futures
-    ticker, e.g. ("NQ", "MINI") -> "MNQ1!". "1!" is TradingView's standard
-    suffix for the continuous front-month contract of a futures symbol.
+    ticker. "1!" is TradingView's standard suffix for the continuous
+    front-month contract of a futures symbol.
+
+    TradingGenerator's `asset` field is sometimes already the micro ticker
+    itself (e.g. "MNQ") and sometimes the plain/mini ticker (e.g. "NQ"),
+    independent of what `contract_size` says -- so:
+      - ("NQ", "MINI")  -> "NQ1!"  (real mini, un-prefixed ticker)
+      - ("NQ", "MICRO") -> "MNQ1!" (micro contract -> "M"-prefixed ticker)
+      - ("MNQ", "MINI")  -> "MNQ1!" (asset is already the micro ticker --
+        trust it as given rather than stripping the "M")
+      - ("MNQ", "MICRO") -> "MNQ1!" (same, consistent)
+
+    See config.DEV_TREAT_MINI_AS_MICRO: while developing from source, a
+    plain-ticker asset with MINI is deliberately also routed to its micro
+    ticker (safer to test against); the compiled .exe always uses the real
+    mapping above.
     """
-    ticker = f"M{asset}" if (contract_size or '').upper() == 'MINI' else asset
+    asset = (asset or '').upper()
+    if asset.startswith('M'):
+        return f"{asset}1!"
+    size = (contract_size or '').upper()
+    use_micro_ticker = size == 'MICRO' or (size == 'MINI' and config.DEV_TREAT_MINI_AS_MICRO)
+    ticker = f"M{asset}" if use_micro_ticker else asset
     return f"{ticker}1!"
 
 

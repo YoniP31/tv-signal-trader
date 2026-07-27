@@ -29,6 +29,17 @@ USER_AGENT = (
     "Chrome/124.0.0.0 Safari/537.36"
 )
 
+# DEV ONLY: TradingGenerator's "MINI" contract size means the real mini
+# ticker (NQ, ES, GC, ...), not the "M"-prefixed micro ticker (MNQ, MES,
+# MGC, ...) -- see trading.resolve_symbol. While developing from source,
+# though, it's safer to test against micro contracts (an account is far
+# less likely to get liquidated), so MINI signals are deliberately routed
+# to their micro ticker instead. This flips off automatically in the
+# compiled .exe (_RUNNING_COMPILED above, built via build.ps1), which
+# always uses the correct mini/micro mapping -- do not hardcode this True
+# for a real build.
+DEV_TREAT_MINI_AS_MICRO = not _RUNNING_COMPILED
+
 LOGIN_POLL_INTERVAL_SECONDS = 15
 TRADE_CLOSE_POLL_INTERVAL_SECONDS = 20
 TRADE_CLOSE_TIMEOUT_SECONDS = 24 * 60 * 60
