@@ -91,6 +91,17 @@ _DEFAULT_TP_CAP_BUFFER_RANGE = (50, 200)
 # company. Overridable via MAX_POSITIONS_PER_COMPANY in .env.
 _DEFAULT_MAX_POSITIONS_PER_COMPANY = 3
 
+# web_multi only: randomized polling cadences, each drawn fresh from its own
+# range rather than a fixed interval. Both default to today's fixed values
+# (so behavior is unchanged until overridden in .env). POSITION_POLL is used
+# while waiting on an open position or a not-yet-eligible signal; PORTFOLIO_
+# RETRY is used when every known portfolio is locked/unavailable and there's
+# nothing to check yet -- kept deliberately separate from
+# signal_source.PORTFOLIO_RETRY_INTERVAL_SECONDS (the 'web' command's own,
+# unrelated fixed 60s constant) so randomizing this never touches 'web'.
+_DEFAULT_POSITION_POLL_RANGE = (20, 20)
+_DEFAULT_PORTFOLIO_RETRY_RANGE = (60, 60)
+
 
 ENV_FILE = os.path.join(APP_DIR, ".env")
 
@@ -209,6 +220,7 @@ def _reload_env():
     global NO_TRADE_START_TIME, NO_TRADE_END_TIME
     global TP_CAP_BUFFER_RANGE
     global MAX_POSITIONS_PER_COMPANY
+    global POSITION_POLL_RANGE, PORTFOLIO_RETRY_RANGE
     _env = _load_env_file(ENV_FILE)
     TRADINGGENERATOR_USERNAME = _env.get("TRADINGGENERATOR_USERNAME", "")
     TRADINGGENERATOR_PASSWORD = _env.get("TRADINGGENERATOR_PASSWORD", "")
@@ -252,6 +264,18 @@ def _reload_env():
 
     MAX_POSITIONS_PER_COMPANY = int(
         _env.get("MAX_POSITIONS_PER_COMPANY") or _DEFAULT_MAX_POSITIONS_PER_COMPANY
+    )
+
+    default_position_poll_min, default_position_poll_max = _DEFAULT_POSITION_POLL_RANGE
+    POSITION_POLL_RANGE = (
+        float(_env.get("POSITION_POLL_MIN_SECONDS") or default_position_poll_min),
+        float(_env.get("POSITION_POLL_MAX_SECONDS") or default_position_poll_max),
+    )
+
+    default_portfolio_retry_min, default_portfolio_retry_max = _DEFAULT_PORTFOLIO_RETRY_RANGE
+    PORTFOLIO_RETRY_RANGE = (
+        float(_env.get("PORTFOLIO_RETRY_MIN_SECONDS") or default_portfolio_retry_min),
+        float(_env.get("PORTFOLIO_RETRY_MAX_SECONDS") or default_portfolio_retry_max),
     )
 
 

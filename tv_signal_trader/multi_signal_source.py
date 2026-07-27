@@ -26,13 +26,6 @@ from . import status
 from . import trading
 from . import tradinggenerator as tg
 
-# How long to wait before re-checking eligibility when we're just waiting on
-# an open position (not everything locked/unavailable -- that's
-# signal_source.PORTFOLIO_RETRY_INTERVAL_SECONDS). Matches the single-position
-# flow's TRADE_CLOSE_POLL_INTERVAL_SECONDS cadence.
-POSITION_WAIT_INTERVAL_SECONDS = config.TRADE_CLOSE_POLL_INTERVAL_SECONDS
-
-
 def check_eligibility(next_company, next_portfolio, engaged_company, open_positions):
     """Whether it's OK to generate+open a trade for next_company/next_portfolio
     right now, given which company is currently "engaged" (holds any open
@@ -331,9 +324,8 @@ def run_web_loop_multi(driver):
                 now = config.now_in_israel()
                 if open_positions:
                     print(f"  Outside the trading session with {len(open_positions)} position(s) still "
-                          f"open - waiting for them to close (checking again in "
-                          f"{POSITION_WAIT_INTERVAL_SECONDS}s)...")
-                    time.sleep(POSITION_WAIT_INTERVAL_SECONDS)
+                          "open - waiting for them to close (checking again shortly)...")
+                    humanize.random_wait(*config.POSITION_POLL_RANGE)
                     continue
 
                 if (config.SESSION_END_TIME and now.time() > config.SESSION_END_TIME
@@ -354,22 +346,21 @@ def run_web_loop_multi(driver):
                 status.update(loop_state='no_trade_window')
                 if open_positions:
                     print(f"  Inside the no-trade window with {len(open_positions)} position(s) still "
-                          f"open - waiting for them to close (checking again in "
-                          f"{POSITION_WAIT_INTERVAL_SECONDS}s)...")
-                    time.sleep(POSITION_WAIT_INTERVAL_SECONDS)
+                          "open - waiting for them to close (checking again shortly)...")
+                    humanize.random_wait(*config.POSITION_POLL_RANGE)
                     continue
                 print(f"  Inside the no-trade window ({config.NO_TRADE_START_TIME.strftime('%H:%M')}-"
                       f"{config.NO_TRADE_END_TIME.strftime('%H:%M')} Israel time) - not generating new "
-                      f"trades; checking again in {signal_source.PORTFOLIO_RETRY_INTERVAL_SECONDS}s...")
-                time.sleep(signal_source.PORTFOLIO_RETRY_INTERVAL_SECONDS)
+                      "trades; checking again shortly...")
+                humanize.random_wait(*config.PORTFOLIO_RETRY_RANGE)
                 continue
 
             eligibility = check_eligibility(next_company, next_portfolio, engaged_company, open_positions)
             if eligibility != 'eligible':
                 status.update(loop_state='waiting_for_position_slot')
                 print(f"  Not eligible to open the next signal yet ({eligibility}) - "
-                      f"checking again in {POSITION_WAIT_INTERVAL_SECONDS}s...")
-                time.sleep(POSITION_WAIT_INTERVAL_SECONDS)
+                      "checking again shortly...")
+                humanize.random_wait(*config.POSITION_POLL_RANGE)
                 continue
 
             status.update(loop_state='trading')
@@ -392,11 +383,11 @@ def run_web_loop_multi(driver):
                 status.update(loop_state='stopped', stop_reason='generate_button_not_found')
                 return
             if gen_outcome != 'generated':
-                print(f"  No tradeable portfolio available right now (all locked/unavailable) - "
-                      f"checking again in {signal_source.PORTFOLIO_RETRY_INTERVAL_SECONDS}s...")
+                print("  No tradeable portfolio available right now (all locked/unavailable) - "
+                      "checking again shortly...")
                 unavailable.clear()
                 status.update(loop_state='waiting_for_portfolio')
-                time.sleep(signal_source.PORTFOLIO_RETRY_INTERVAL_SECONDS)
+                humanize.random_wait(*config.PORTFOLIO_RETRY_RANGE)
                 continue
 
             humanize.long_pause(2, 3)
