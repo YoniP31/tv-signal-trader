@@ -279,6 +279,125 @@ def _open_position(driver, web_tab, tv_tab, params, connected_company):
     return 'opened', connected_company, entry
 
 
+def _reconcile_open_positions_at_startup(driver, web_tab, tv_tab):
+    """Runs once at startup, before the main loop begins: for every
+    (company, portfolio) with a configured Tradovate account, checks
+    whether a previous (e.g. crashed) run left a position open or closed
+    without reporting it, and either rehydrates it into a fresh
+    open_positions ledger or reports its already-known result -- so a
+    crash never permanently loses track of a live position or leaves
+    TradingGenerator's Trade Result prompt stuck.
+
+    Source of truth is live DOM state (Tradovate's Orders table,
+    TradingGenerator's still-displayed trade parameters/Trade Result
+    prompt), not status.json -- it has no "pending report" bit and could
+    itself be stale after a crash.
+
+    Returns (open_positions, connected_company) to seed the main loop with.
+    """
+    open_positions = {}
+    connected_company = None
+    driver.switch_to.window(web_tab)
+    candidates = tg.list_all_candidates(driver)
+
+    for company, portfolio in candidates:
+        if config.TRADOVATE_ACCOUNTS.get(company) is None:
+            continue
+
+        driver.switch_to.window(tv_tab)
+        connected_company = _ensure_tradovate_connection(driver, company, connected_company)
+        if connected_company is None:
+            print(f"  [WARN] Startup check: could not connect to Tradovate for '{company}' - skipping.")
+            continue
+        if not trading.select_tradovate_account(driver, portfolio):
+            print(f"  [WARN] Startup check: could not select Tradovate account '{portfolio}' - skipping.")
+            continue
+        if not trading.click_orders_tab(driver):
+            print(f"  [WARN] Startup check: could not open the Orders tab for '{portfolio}' - skipping.")
+            continue
+
+        bracket = trading.find_working_bracket(driver)
+        tp_id, sl_id = bracket.get('tp'), bracket.get('sl')
+
+        if tp_id and sl_id:
+            # Position still open -- TradingGenerator still displays the
+            # pending trade's original parameters until a result is
+            # reported, so recover them from there rather than guessing.
+            driver.switch_to.window(web_tab)
+            tg.select_company(driver, company)
+            tg.select_portfolio(driver, portfolio)
+            params = tg.read_trade_parameters(driver)
+            missing = [k for k in ('asset', 'direction', 'contracts', 'sl_ticks', 'tp_ticks', 'account_type')
+                       if params.get(k) is None]
+            if missing:
+                print(f"  [WARN] '{company} / {portfolio}' has an open position but its trade "
+                      f"parameters couldn't be fully recovered ({', '.join(missing)}) - leaving it "
+                      "for manual review.")
+                continue
+            open_positions[(company, portfolio)] = {
+                'tp_id': tp_id,
+                'sl_id': sl_id,
+                'account_type': params['account_type'],
+                'asset': params['asset'],
+                'direction': params['direction'],
+                'contracts': params['contracts'],
+                'sl_ticks': params['sl_ticks'],
+                # Best-effort: this is the original, possibly-unadjusted TP
+                # from TradingGenerator (see adjust_tp_for_max_balance) --
+                # the live order's actual tick count isn't recoverable here,
+                # but this field is only used for status/record-keeping, not
+                # for determining the outcome (that's tp_id/sl_id above).
+                'tp_ticks': params['tp_ticks'],
+            }
+            print(f"  [RECOVER] '{company} / {portfolio}' has an open position from a previous run - "
+                  "added to the ledger.")
+            continue
+
+        driver.switch_to.window(web_tab)
+        tg.select_company(driver, company)
+        tg.select_portfolio(driver, portfolio)
+        if not tg.has_pending_trade_result(driver):
+            continue
+
+        # No working bracket, but TradingGenerator still shows a pending
+        # Trade Result prompt -- the position closed while we were down and
+        # was never reported.
+        driver.switch_to.window(tv_tab)
+        bracket = trading.find_last_bracket(driver)
+        tp_id, sl_id = bracket.get('tp'), bracket.get('sl')
+        if not tp_id or not sl_id:
+            print(f"  [WARN] '{company} / {portfolio}' has an unreported Trade Result prompt but its "
+                  "last bracket order couldn't be found - leaving it for manual review.")
+            continue
+        outcome = trading.check_bracket_status(driver, tp_id, sl_id)
+
+        driver.switch_to.window(web_tab)
+        tg.select_company(driver, company)
+        tg.select_portfolio(driver, portfolio)
+
+        if outcome == 'manual_close':
+            print(f"  [WARN] '{company} / {portfolio}' closed manually or was liquidated while the "
+                  "bot was down - no correct result to report. Quarantining until the next session.")
+            status.mark_portfolio_unavailable(company, portfolio, 'manual_close_or_liquidation')
+            continue
+        if outcome not in ('tp', 'sl'):
+            print(f"  [WARN] '{company} / {portfolio}' has an unreported Trade Result prompt but its "
+                  f"last bracket status ('{outcome}') couldn't be resolved - leaving it for manual review.")
+            continue
+
+        params = tg.read_trade_parameters(driver)
+        print(f"  [RECOVER] '{company} / {portfolio}' closed ({outcome}) while the bot was down and "
+              "was never reported - reporting now.")
+        tg.report_trade_result(driver, outcome)
+        status.record_trade_result(
+            company, portfolio,
+            asset=params['asset'], direction=params['direction'], contracts=params['contracts'],
+            sl_ticks=params['sl_ticks'], tp_ticks=params['tp_ticks'], result=outcome,
+        )
+
+    return open_positions, connected_company
+
+
 def run_web_loop_multi(driver):
     """Like signal_source.run_web_loop(), but supports several concurrent
     open positions under the rules described at the top of this module.
@@ -300,15 +419,19 @@ def run_web_loop_multi(driver):
     before every generate attempt so signal_source.generate_next_trade's
     own rotation keeps steering clear of it regardless of `unavailable`'s
     own clear/reset cycles, and gets reset alongside the daily sweep.
+
+    Before the loop starts, _reconcile_open_positions_at_startup() checks
+    every configured company/portfolio for a position left open (or closed
+    but never reported) by a previous run -- e.g. a crash. Recovered open
+    positions seed `open_positions` directly; no new trade is generated
+    until they've all drained (same wait as any other open position).
     """
     print("\n[WEB-MULTI] Starting automatic multi-position trading loop (Ctrl+C to stop)...")
     tv_tab = driver.current_window_handle
-    connected_company = None
     next_company = None
     next_portfolio = None
     unavailable = set()
     quarantined = set()
-    open_positions = {}
     engaged_company = None
     consecutive_failures = 0
     last_backup_date = None
@@ -317,6 +440,15 @@ def run_web_loop_multi(driver):
     try:
         web_tab = tg.open_tab(driver, tv_tab)
         print("  TradingGenerator tab ready [OK]")
+
+        print("  Checking for positions left open or unreported by a previous run...")
+        open_positions, connected_company = _reconcile_open_positions_at_startup(driver, web_tab, tv_tab)
+        recovering = bool(open_positions)
+        if recovering:
+            print(f"  Recovered {len(open_positions)} position(s) from a previous run - "
+                  "will hold off on new trades until they're all closed.")
+        else:
+            print("  Nothing to recover - starting fresh.")
 
         while True:
             session_status, session_wait = config.session_window_status()
@@ -362,6 +494,16 @@ def run_web_loop_multi(driver):
                 open_positions=[f"{c} / {p}" for c, p in open_positions],
                 quarantined=[f"{c} / {p}" for c, p in quarantined],
             )
+
+            if recovering:
+                if open_positions:
+                    status.update(loop_state='recovering')
+                    print(f"  Recovering from a previous run - {len(open_positions)} position(s) still "
+                          "open. Waiting for them to close before generating new trades...")
+                    humanize.random_wait(*config.POSITION_POLL_RANGE)
+                    continue
+                print("  Recovery complete - all positions from the previous run are closed and reported.")
+                recovering = False
 
             if session_status == 'waiting':
                 status.update(loop_state='waiting_for_session')

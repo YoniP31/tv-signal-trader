@@ -92,6 +92,18 @@ Once per calendar day (at startup if already inside the trading session, or righ
 
 **How to test:** hard to fully test without an actually-liquidated account. At minimum, confirm the sweep runs cleanly on startup (look for `[SWEEP] Checking for liquidated accounts...` and `[SWEEP] Done.` in the console) without errors, for every company you have a Tradovate account configured for.
 
+## Crash recovery (startup reconciliation)
+
+Every time `web_multi` starts, before it generates any new trade, it checks every configured company/portfolio for a position a *previous* run left behind (e.g. the bot crashed or was closed unexpectedly):
+
+- **Still open** (a working Take Profit/Stop Loss bracket): recovered straight into the ledger, same as if the bot had just opened it itself. Its trade parameters (asset/direction/contracts/SL/TP) are read back from TradingGenerator, which keeps showing them until a result is reported.
+- **Already closed, but TradingGenerator's Trade Result prompt is still waiting**: the bot works out whether it hit TP or SL from the Orders table and reports it now, exactly as if it had just happened.
+- **Closed manually/liquidated while the bot was down** (neither TP nor SL filled): same as a live manual close — no result is reported, that portfolio is quarantined until the next session.
+
+While any recovered position remains open, the bot won't generate any new trade — it just keeps monitoring/reporting (the same as any other open position) until the ledger is fully drained, then resumes normally.
+
+**How to test:** open a position via `web_multi`, then stop the bot (Ctrl+C or close the browser) while it's still open. Restart `web_multi` and confirm the console reports finding it ("Recovered N position(s) from a previous run"), keeps monitoring it until it closes, and only then starts generating new trades. To test the "closed but unreported" path, stop the bot, manually resolve the position from the Tradovate panel (let TP or SL fill), then restart and confirm it detects and reports the result on its own.
+
 ## Randomized polling delays
 
 Instead of checking on a fixed cadence (e.g. always exactly every 20 seconds), `web_multi` sleeps a random duration between a MIN and MAX each time, so its checking pattern isn't perfectly predictable. There are two independent ranges, set in `.env`:

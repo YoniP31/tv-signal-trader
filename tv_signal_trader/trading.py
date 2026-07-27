@@ -637,6 +637,33 @@ def find_working_bracket(driver):
     return result or {}
 
 
+def find_last_bracket(driver):
+    """Finds the data-row-id of the most recent Take Profit and Stop Loss
+    orders in the (already-open) Orders table, regardless of status --
+    unlike find_working_bracket, which only matches 'working' rows.
+
+    Used during startup reconciliation to identify a bracket pair that
+    already resolved (Filled/Cancelled) before the bot could report it --
+    the table lists newest first (see check_entry_rejected), so the first
+    Take Profit and first Stop Loss typed rows encountered are the most
+    recent pair.
+    """
+    result = driver.execute_script("""
+        var rows = document.querySelectorAll('tr[data-row-id]');
+        var tp = null, sl = null;
+        for (var i = 0; i < rows.length; i++) {
+            var typeCell = rows[i].querySelector('td[data-label="Type"]');
+            if (!typeCell) continue;
+            var type = (typeCell.innerText || '').trim().toLowerCase();
+            if (type === 'take profit' && tp === null) tp = rows[i].getAttribute('data-row-id');
+            if (type === 'stop loss' && sl === null) sl = rows[i].getAttribute('data-row-id');
+            if (tp !== null && sl !== null) break;
+        }
+        return {tp: tp, sl: sl};
+    """)
+    return result or {}
+
+
 def _read_order_status(driver, row_id):
     """Reads the Status cell of a specific order row by its data-row-id."""
     if row_id is None:

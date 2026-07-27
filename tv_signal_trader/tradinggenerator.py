@@ -509,6 +509,19 @@ def report_trade_result(driver, outcome):
     return False
 
 
+def has_pending_trade_result(driver):
+    """Whether the Trade Result prompt (#tradeResultSection) is currently
+    open for the selected company/portfolio -- i.e. a trade was generated
+    here but its result was never reported (e.g. the bot crashed before
+    reporting it). The section's 'visible' class toggles whether it's
+    actually shown."""
+    try:
+        section = driver.find_element(By.ID, "tradeResultSection")
+    except Exception:
+        return False
+    return 'visible' in (section.get_attribute('class') or '').split()
+
+
 def save_backup(driver):
     """Clicks TradingGenerator's "Save Backup" button (.backup-btn-save),
     which downloads a .json backup of its current state -- run once the
