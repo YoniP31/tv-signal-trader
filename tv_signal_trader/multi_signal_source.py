@@ -5,7 +5,7 @@ full design; built and checked step by step rather than all at once.
 
 Concurrency rules (confirmed with the user):
   - One open position per portfolio.
-  - At most MAX_POSITIONS_PER_COMPANY open at a single company at once.
+  - At most config.MAX_POSITIONS_PER_COMPANY open at a single company at once.
   - Only one company may have any open positions at any given time.
   - Eligibility for the next signal is decided *before* clicking Generate,
     using the previous trade's "next portfolio to trade" hint -- not
@@ -25,10 +25,6 @@ from . import signal_source
 from . import status
 from . import trading
 from . import tradinggenerator as tg
-
-# One open position per portfolio; at most this many concurrently open at a
-# single company; only one company may have any open positions at a time.
-MAX_POSITIONS_PER_COMPANY = 3
 
 # How long to wait before re-checking eligibility when we're just waiting on
 # an open position (not everything locked/unavailable -- that's
@@ -53,15 +49,15 @@ def check_eligibility(next_company, next_portfolio, engaged_company, open_positi
       - 'wait_this_portfolio': next_portfolio itself already has an open
         position (not flat) -- must wait for it to close before reopening.
       - 'wait_company_cap': next_company is already at
-        MAX_POSITIONS_PER_COMPANY open positions -- must wait for at least
-        one to close before opening another.
+        config.MAX_POSITIONS_PER_COMPANY open positions -- must wait for at
+        least one to close before opening another.
     """
     if engaged_company is not None and engaged_company != next_company:
         return 'wait_different_company'
     if (next_company, next_portfolio) in open_positions:
         return 'wait_this_portfolio'
     company_open_count = sum(1 for (c, _p) in open_positions if c == next_company)
-    if company_open_count >= MAX_POSITIONS_PER_COMPANY:
+    if company_open_count >= config.MAX_POSITIONS_PER_COMPANY:
         return 'wait_company_cap'
     return 'eligible'
 

@@ -87,6 +87,10 @@ _DEFAULT_ACCOUNT_TIER_MAX = {
 # TP_CAP_BUFFER_MIN/TP_CAP_BUFFER_MAX in .env.
 _DEFAULT_TP_CAP_BUFFER_RANGE = (50, 200)
 
+# web_multi only: at most this many concurrently open positions at a single
+# company. Overridable via MAX_POSITIONS_PER_COMPANY in .env.
+_DEFAULT_MAX_POSITIONS_PER_COMPANY = 3
+
 
 ENV_FILE = os.path.join(APP_DIR, ".env")
 
@@ -204,6 +208,7 @@ def _reload_env():
     global SESSION_START_TIME, SESSION_END_TIME
     global NO_TRADE_START_TIME, NO_TRADE_END_TIME
     global TP_CAP_BUFFER_RANGE
+    global MAX_POSITIONS_PER_COMPANY
     _env = _load_env_file(ENV_FILE)
     TRADINGGENERATOR_USERNAME = _env.get("TRADINGGENERATOR_USERNAME", "")
     TRADINGGENERATOR_PASSWORD = _env.get("TRADINGGENERATOR_PASSWORD", "")
@@ -243,6 +248,10 @@ def _reload_env():
     TP_CAP_BUFFER_RANGE = (
         float(_env.get("TP_CAP_BUFFER_MIN") or default_buffer_min),
         float(_env.get("TP_CAP_BUFFER_MAX") or default_buffer_max),
+    )
+
+    MAX_POSITIONS_PER_COMPANY = int(
+        _env.get("MAX_POSITIONS_PER_COMPANY") or _DEFAULT_MAX_POSITIONS_PER_COMPANY
     )
 
 

@@ -7,7 +7,7 @@ Type `web_multi` at the `>` prompt to run it, same as `web`.
 ## The concurrency rules
 
 1. **One open position per portfolio.** A portfolio that already has a trade open won't get a second one until the first closes.
-2. **At most 3 open positions per company at once.**
+2. **At most `MAX_POSITIONS_PER_COMPANY` open positions per company at once** (default 3, set in `.env`).
 3. **Only one company may have open positions at a time.** If a signal comes in for a different company while the current one still has open positions, it waits for all of them to close first, then switches over.
 
 The bot decides whether it's allowed to open a signal *before* pressing "Generate New Trade" — it always knows the next portfolio TradingGenerator wants to trade next (from the "Next Portfolio to Trade" box), and checks it against the rules above first.
