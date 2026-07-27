@@ -12,7 +12,13 @@ Type `web_multi` at the `>` prompt to run it, same as `web`.
 
 The bot decides whether it's allowed to open a signal *before* pressing "Generate New Trade" — it always knows the next portfolio TradingGenerator wants to trade next (from the "Next Portfolio to Trade" box), and checks it against the rules above first.
 
-**How to test:** open a trade on Portfolio A, let TradingGenerator's next signal land on Portfolio B of the *same* company, and confirm the bot opens B alongside A (2 open at once) rather than waiting. Then let a signal come in for a *different* company and confirm the bot waits (you'll see `wait_different_company` printed, checking every ~20s) until A and B both close before opening there.
+**How to test:** open a trade on Portfolio A, let TradingGenerator's next signal land on Portfolio B of the *same* company, and confirm the bot opens B alongside A (2 open at once) rather than waiting. Then let a signal come in for a *different* company and confirm the bot waits (you'll see `wait_different_company` printed, checking again shortly) until A and B both close before opening there.
+
+## No hedging
+
+The bot won't open a trade at a company that already has an open position in the *opposite* direction — e.g. if Portfolio A is currently long, a new short signal at the same company gets reported Not Taken and the bot waits for A (and any other open position at that company) to close before trying again. Same-direction signals at the same company are unaffected (that's just the normal multi-position case above).
+
+**How to test:** with a long position open via `web_multi`, arrange for the next signal at the same company to be a short (or vice versa) — confirm the console prints `wait_hedge_conflict`, Not Taken is reported, and the bot doesn't open the opposite-direction trade until the existing position closes.
 
 ## Multiple portfolios per signal
 

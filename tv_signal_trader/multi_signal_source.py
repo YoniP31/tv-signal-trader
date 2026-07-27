@@ -7,6 +7,8 @@ Concurrency rules (confirmed with the user):
   - One open position per portfolio.
   - At most config.MAX_POSITIONS_PER_COMPANY open at a single company at once.
   - Only one company may have any open positions at any given time.
+  - No hedging: a new trade at a company already holding an open position in
+    the opposite direction waits for that position to close first.
   - Eligibility for the next signal is decided *before* clicking Generate,
     using the previous trade's "next portfolio to trade" hint -- not
     "generate first, then discover we have to wait".
@@ -26,14 +28,21 @@ from . import status
 from . import trading
 from . import tradinggenerator as tg
 
-def check_eligibility(next_company, next_portfolio, engaged_company, open_positions):
+
+def check_eligibility(next_company, next_portfolio, next_direction, engaged_company, open_positions):
     """Whether it's OK to generate+open a trade for next_company/next_portfolio
     right now, given which company is currently "engaged" (holds any open
     positions) and what's already open.
 
-    `open_positions` is a dict keyed (company, portfolio) -- only its keys
-    matter here, values (bracket order IDs, etc.) are irrelevant to this
-    check.
+    `open_positions` is a dict keyed (company, portfolio) -- its values
+    (each a ledger entry, see _open_position) matter here too now, for the
+    hedge-conflict check below.
+
+    `next_direction` ('LONG'/'SHORT') is optional -- pass None when it isn't
+    known yet (the pre-generate hint call, before TradingGenerator's next
+    signal has actually been read), which simply skips the hedge-conflict
+    check for that call; the real check happens on the later post-generate
+    call, once the candidate trade's direction is known.
 
     Returns:
       - 'eligible': fine to generate and open now.
@@ -41,6 +50,13 @@ def check_eligibility(next_company, next_portfolio, engaged_company, open_positi
         positions -- must wait for all of those to close before switching.
       - 'wait_this_portfolio': next_portfolio itself already has an open
         position (not flat) -- must wait for it to close before reopening.
+      - 'wait_hedge_conflict': next_direction conflicts with the direction of
+        an already-open position at the same company (a hedge) -- must wait
+        for the open position(s) to close before opening the opposite side.
+        Since only one company may ever be engaged at once (see
+        wait_different_company above), every currently-open position already
+        belongs to next_company whenever there is one, so this only needs to
+        compare directions, not re-check company.
       - 'wait_company_cap': next_company is already at
         config.MAX_POSITIONS_PER_COMPANY open positions -- must wait for at
         least one to close before opening another.
@@ -49,6 +65,10 @@ def check_eligibility(next_company, next_portfolio, engaged_company, open_positi
         return 'wait_different_company'
     if (next_company, next_portfolio) in open_positions:
         return 'wait_this_portfolio'
+    if next_direction is not None:
+        for (c, _p), position in open_positions.items():
+            if c == next_company and position['direction'] != next_direction:
+                return 'wait_hedge_conflict'
     company_open_count = sum(1 for (c, _p) in open_positions if c == next_company)
     if company_open_count >= config.MAX_POSITIONS_PER_COMPANY:
         return 'wait_company_cap'
@@ -355,7 +375,11 @@ def run_web_loop_multi(driver):
                 humanize.random_wait(*config.PORTFOLIO_RETRY_RANGE)
                 continue
 
-            eligibility = check_eligibility(next_company, next_portfolio, engaged_company, open_positions)
+            # next_direction is unknown at this point (only a portfolio hint
+            # is available before Generate is clicked) -- the hedge-conflict
+            # check is skipped here and applied for real below, once
+            # params['direction'] is known.
+            eligibility = check_eligibility(next_company, next_portfolio, None, engaged_company, open_positions)
             if eligibility != 'eligible':
                 status.update(loop_state='waiting_for_position_slot')
                 print(f"  Not eligible to open the next signal yet ({eligibility}) - "
@@ -459,7 +483,9 @@ def run_web_loop_multi(driver):
 
             opened_any = False
             for portfolio in targets:
-                portfolio_eligibility = check_eligibility(company, portfolio, engaged_company, open_positions)
+                portfolio_eligibility = check_eligibility(
+                    company, portfolio, params['direction'], engaged_company, open_positions
+                )
                 if portfolio_eligibility == 'eligible':
                     portfolio_params = dict(params, portfolio=portfolio)
                     open_outcome, connected_company, entry = _open_position(
