@@ -744,15 +744,19 @@ def wait_for_close(driver, timeout=None, poll_interval=None):
     on, rather than re-matched by Type each time, so an older resolved
     order from a previous trade can never be mistaken for the current one.
 
+    `poll_interval`, if given, is used as a fixed wait between checks;
+    otherwise (the default) each wait is a fresh random duration drawn from
+    config.POSITION_POLL_RANGE, so this doesn't tick at a perfectly regular
+    interval for however long the position stays open (minutes to ~24h).
+
     Returns None if the wait times out, the current bracket can't be found,
     or it resolves without either side actually filling (e.g. the position
     was closed manually) -- misreporting which side a trade closed on is
     worse than not reporting a result at all.
     """
     timeout = timeout if timeout is not None else config.TRADE_CLOSE_TIMEOUT_SECONDS
-    poll_interval = poll_interval if poll_interval is not None else config.TRADE_CLOSE_POLL_INTERVAL_SECONDS
 
-    print(f"  Waiting for the position to close (checking every {poll_interval}s)...")
+    print("  Waiting for the position to close...")
     if not click_orders_tab(driver):
         print("  Could not open the broker panel/Orders tab.")
         return None
@@ -779,8 +783,9 @@ def wait_for_close(driver, timeout=None, poll_interval=None):
                   f"SL='{sl_status}') - can't determine outcome.")
             return None
 
-        time.sleep(poll_interval)
-        elapsed += poll_interval
+        wait_s = poll_interval if poll_interval is not None else random.uniform(*config.POSITION_POLL_RANGE)
+        time.sleep(wait_s)
+        elapsed += wait_s
 
     print("  Timed out waiting for the position to close.")
     return None

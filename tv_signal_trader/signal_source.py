@@ -13,12 +13,6 @@ from . import tradinggenerator as tg
 # that can happen before something is clearly systemically wrong.
 MAX_CONSECUTIVE_FAILURES = 5
 
-# How long to wait before re-checking when every known portfolio is
-# locked/unavailable -- there's no way to know exactly when one might free
-# up (a daily limit resetting, a human re-enabling something), so this just
-# polls at a low, non-disruptive pace rather than giving up for the day.
-PORTFOLIO_RETRY_INTERVAL_SECONDS = 60
-
 
 def report_not_taken(driver, params):
     """Reports Trade Not Taken and, if we know which portfolio this was
@@ -136,8 +130,9 @@ def run_web_loop(driver):
     TradingView, waits for it to close, and reports the result back.
     Rotates through other companies/portfolios when the current one is
     locked or otherwise unavailable; if *every* one currently is, it doesn't
-    give up -- it polls every PORTFOLIO_RETRY_INTERVAL_SECONDS in case one
-    frees up (a daily limit resetting, a portfolio being re-added). Only
+    give up -- it polls (config.PORTFOLIO_RETRY_RANGE, a fresh random
+    duration each time rather than a fixed interval) in case one frees up
+    (a daily limit resetting, a portfolio being re-added). Only
     stops for real when TradingGenerator login fails or a trade's outcome
     genuinely can't be determined. Stoppable with Ctrl+C at any point.
 
@@ -205,8 +200,8 @@ def run_web_loop(driver):
                 status.update(loop_state='no_trade_window')
                 print(f"  Inside the no-trade window ({config.NO_TRADE_START_TIME.strftime('%H:%M')}-"
                       f"{config.NO_TRADE_END_TIME.strftime('%H:%M')} Israel time) - not generating new "
-                      f"trades; checking again in {PORTFOLIO_RETRY_INTERVAL_SECONDS}s...")
-                time.sleep(PORTFOLIO_RETRY_INTERVAL_SECONDS)
+                      "trades; checking again shortly...")
+                humanize.random_wait(*config.PORTFOLIO_RETRY_RANGE)
                 continue
 
             today = config.now_in_israel().date()
@@ -231,15 +226,15 @@ def run_web_loop(driver):
                 status.update(loop_state='stopped', stop_reason='generate_button_not_found')
                 return
             if gen_outcome != 'generated':
-                print(f"  No tradeable portfolio available right now (all locked/unavailable) - "
-                      f"checking again in {PORTFOLIO_RETRY_INTERVAL_SECONDS}s...")
+                print("  No tradeable portfolio available right now (all locked/unavailable) - "
+                      "checking again shortly...")
                 # Nothing's usable *right now*, but that can change (a daily
                 # limit resets, someone re-adds a portfolio) -- forget what
                 # we've ruled out and give everything a fresh look next time
                 # instead of blacklisting it for the rest of the run.
                 unavailable.clear()
                 status.update(loop_state='waiting_for_portfolio')
-                time.sleep(PORTFOLIO_RETRY_INTERVAL_SECONDS)
+                humanize.random_wait(*config.PORTFOLIO_RETRY_RANGE)
                 continue
 
             humanize.long_pause(2, 3)

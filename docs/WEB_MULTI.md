@@ -106,18 +106,9 @@ While any recovered position remains open, the bot won't generate any new trade 
 
 ## Randomized polling delays
 
-Instead of checking on a fixed cadence (e.g. always exactly every 20 seconds), `web_multi` sleeps a random duration between a MIN and MAX each time, so its checking pattern isn't perfectly predictable. There are two independent ranges, set in `.env`:
+`web_multi` (like `web`) checks on a randomized cadence rather than a fixed one, so it doesn't tick at a perfectly regular interval over a long unattended run. See the main [README](../README.md) — this behavior is shared with `web`, not specific to `web_multi`.
 
-```
-POSITION_POLL_MIN_SECONDS=20
-POSITION_POLL_MAX_SECONDS=20
-PORTFOLIO_RETRY_MIN_SECONDS=60
-PORTFOLIO_RETRY_MAX_SECONDS=60
-```
-
-`POSITION_POLL` covers waiting on an open position or a signal that isn't eligible to open yet; `PORTFOLIO_RETRY` covers the slower cadence used when every known portfolio is locked/unavailable. Both default to today's old fixed values (20s/60s) until you widen the range.
-
-**How to test:** widen a range (e.g. `POSITION_POLL_MIN_SECONDS=10` / `POSITION_POLL_MAX_SECONDS=30`), run `web_multi` with an open position, and confirm the console's "checking again" messages land at varying intervals rather than a constant one.
+**How to test:** run `web_multi` with an open position and watch the console's "checking again" messages — they should land after varying delays, not a constant one.
 
 ## Where things live, if you need to dig deeper
 

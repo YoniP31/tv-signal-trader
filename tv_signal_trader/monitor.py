@@ -1,4 +1,5 @@
 import os
+import random
 import threading
 
 from . import browser
@@ -32,9 +33,9 @@ class LoginMonitor:
     background thread -- so os._exit() is used deliberately here.
     """
 
-    def __init__(self, driver, interval=config.LOGIN_POLL_INTERVAL_SECONDS):
+    def __init__(self, driver, interval_range=config.HEARTBEAT_POLL_RANGE):
         self.driver = driver
-        self.interval = interval
+        self.interval_range = interval_range
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
@@ -43,10 +44,13 @@ class LoginMonitor:
 
     def stop(self):
         self._stop.set()
-        self._thread.join(timeout=self.interval + 5)
+        self._thread.join(timeout=max(self.interval_range) + 5)
 
     def _run(self):
-        while not self._stop.wait(self.interval):
+        # A fresh random duration each cycle (rather than a fixed interval)
+        # so this background heartbeat doesn't tick at a perfectly regular
+        # rate for the entire life of the process.
+        while not self._stop.wait(random.uniform(*self.interval_range)):
             self._poll_once()
 
     def _poll_once(self):

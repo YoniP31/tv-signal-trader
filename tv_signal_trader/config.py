@@ -40,9 +40,22 @@ USER_AGENT = (
 # for a real build.
 DEV_TREAT_MINI_AS_MICRO = not _RUNNING_COMPILED
 
-LOGIN_POLL_INTERVAL_SECONDS = 15
-TRADE_CLOSE_POLL_INTERVAL_SECONDS = 20
 TRADE_CLOSE_TIMEOUT_SECONDS = 24 * 60 * 60
+
+# Randomized polling ranges (hardcoded, not .env-configurable -- deliberately
+# so, since these exist purely to avoid a perfectly regular timing signature
+# during long unattended runs, not to be tuned per deployment). Shared by
+# both 'web' and 'web_multi' wherever a repeated/idle wait would otherwise
+# be a fixed interval:
+#   - HEARTBEAT_POLL_RANGE: the background login/browser-alive check
+#     (monitor.LoginMonitor).
+#   - POSITION_POLL_RANGE: waiting on an open position to close, or on a
+#     signal that isn't eligible to open yet.
+#   - PORTFOLIO_RETRY_RANGE: waiting when every known portfolio is
+#     locked/unavailable and there's nothing to check yet.
+HEARTBEAT_POLL_RANGE = (5, 30)
+POSITION_POLL_RANGE = (20, 300)
+PORTFOLIO_RETRY_RANGE = (20, 300)
 
 # The trading session window (SESSION_START_TIME/SESSION_END_TIME in .env,
 # "HH:MM" 24-hour) is always interpreted in Israel local time, DST and all.
@@ -90,17 +103,6 @@ _DEFAULT_TP_CAP_BUFFER_RANGE = (50, 200)
 # web_multi only: at most this many concurrently open positions at a single
 # company. Overridable via MAX_POSITIONS_PER_COMPANY in .env.
 _DEFAULT_MAX_POSITIONS_PER_COMPANY = 3
-
-# web_multi only: randomized polling cadences, each drawn fresh from its own
-# range rather than a fixed interval. Both default to today's fixed values
-# (so behavior is unchanged until overridden in .env). POSITION_POLL is used
-# while waiting on an open position or a not-yet-eligible signal; PORTFOLIO_
-# RETRY is used when every known portfolio is locked/unavailable and there's
-# nothing to check yet -- kept deliberately separate from
-# signal_source.PORTFOLIO_RETRY_INTERVAL_SECONDS (the 'web' command's own,
-# unrelated fixed 60s constant) so randomizing this never touches 'web'.
-_DEFAULT_POSITION_POLL_RANGE = (20, 20)
-_DEFAULT_PORTFOLIO_RETRY_RANGE = (60, 60)
 
 
 ENV_FILE = os.path.join(APP_DIR, ".env")
@@ -220,7 +222,6 @@ def _reload_env():
     global NO_TRADE_START_TIME, NO_TRADE_END_TIME
     global TP_CAP_BUFFER_RANGE
     global MAX_POSITIONS_PER_COMPANY
-    global POSITION_POLL_RANGE, PORTFOLIO_RETRY_RANGE
     global DAILY_PROFIT_LIMIT
     _env = _load_env_file(ENV_FILE)
     TRADINGGENERATOR_USERNAME = _env.get("TRADINGGENERATOR_USERNAME", "")
@@ -265,18 +266,6 @@ def _reload_env():
 
     MAX_POSITIONS_PER_COMPANY = int(
         _env.get("MAX_POSITIONS_PER_COMPANY") or _DEFAULT_MAX_POSITIONS_PER_COMPANY
-    )
-
-    default_position_poll_min, default_position_poll_max = _DEFAULT_POSITION_POLL_RANGE
-    POSITION_POLL_RANGE = (
-        float(_env.get("POSITION_POLL_MIN_SECONDS") or default_position_poll_min),
-        float(_env.get("POSITION_POLL_MAX_SECONDS") or default_position_poll_max),
-    )
-
-    default_portfolio_retry_min, default_portfolio_retry_max = _DEFAULT_PORTFOLIO_RETRY_RANGE
-    PORTFOLIO_RETRY_RANGE = (
-        float(_env.get("PORTFOLIO_RETRY_MIN_SECONDS") or default_portfolio_retry_min),
-        float(_env.get("PORTFOLIO_RETRY_MAX_SECONDS") or default_portfolio_retry_max),
     )
 
     # web_multi only. Unset by default (no limit) -- an opt-in risk control,
