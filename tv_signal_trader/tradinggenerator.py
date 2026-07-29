@@ -96,11 +96,18 @@ def open_tab(driver, other_tab):
     loop doesn't mistake it for TradingGenerator. Leaves the driver switched
     to the TradingGenerator window.
 
-    Opened with explicit window features (not a plain `window.open(url,
-    '_blank')`, which Chrome treats as a new tab of the same window) so it
-    becomes its own separate OS-level window -- required for
-    browser.hide_window_by_title to be able to hide it independently of
-    the TradingView window, since a tab has no hwnd of its own.
+    config.HIDE_TRADINGGENERATOR_WINDOW controls which of two ways it's
+    opened:
+      - True (default): with explicit window features (not a plain
+        `window.open(url, '_blank')`, which Chrome treats as a new tab of
+        the same window), so it becomes its own separate OS-level window,
+        then hidden via browser.hide_window_by_title -- not reachable
+        through normal user interaction. A tab has no hwnd of its own to
+        hide independently of the TradingView window, hence the window
+        instead of a tab here.
+      - False: a plain, visible tab of the main browser window, no hiding
+        -- useful for debugging, e.g. to actually watch what
+        TradingGenerator is doing.
     """
     site_host = config.SIGNAL_SITE_URL.split('//')[-1].split('/')[0]
     for handle in driver.window_handles:
@@ -111,19 +118,23 @@ def open_tab(driver, other_tab):
             return handle
 
     driver.switch_to.window(other_tab)
-    driver.execute_script(
-        f"window.open('{config.SIGNAL_SITE_URL}', '_blank', 'width=1280,height=800');"
-    )
+    if config.HIDE_TRADINGGENERATOR_WINDOW:
+        driver.execute_script(
+            f"window.open('{config.SIGNAL_SITE_URL}', '_blank', 'width=1280,height=800');"
+        )
+    else:
+        driver.execute_script(f"window.open('{config.SIGNAL_SITE_URL}', '_blank');")
     humanize.long_pause(3, 5)
     web_tab = driver.window_handles[-1]
     driver.switch_to.window(web_tab)
     humanize.long_pause(2, 3)
 
-    if browser.hide_window_by_title("Trading Generator"):
-        print("  TradingGenerator window hidden from the taskbar/Alt-Tab [OK]")
-    else:
-        print("  [WARN] Could not hide the TradingGenerator window (not on Windows, or "
-              "its title wasn't found in time) - it'll stay visible.")
+    if config.HIDE_TRADINGGENERATOR_WINDOW:
+        if browser.hide_window_by_title("Trading Generator"):
+            print("  TradingGenerator window hidden from the taskbar/Alt-Tab [OK]")
+        else:
+            print("  [WARN] Could not hide the TradingGenerator window (not on Windows, or "
+                  "its title wasn't found in time) - it'll stay visible.")
 
     return web_tab
 

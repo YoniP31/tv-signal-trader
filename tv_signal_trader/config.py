@@ -40,6 +40,13 @@ USER_AGENT = (
 # for a real build.
 DEV_TREAT_MINI_AS_MICRO = not _RUNNING_COMPILED
 
+# True (default): tradinggenerator.open_tab() opens TradingGenerator as its
+# own OS-level window and hides it (browser.hide_window_by_title) so it's
+# not reachable through normal user interaction. False: opens it as a
+# plain, visible tab of the main browser window instead (no hiding) --
+# useful for debugging, e.g. to actually see what TradingGenerator is doing.
+HIDE_TRADINGGENERATOR_WINDOW = True
+
 TRADE_CLOSE_TIMEOUT_SECONDS = 24 * 60 * 60
 
 # Randomized polling ranges (hardcoded, not .env-configurable -- deliberately
