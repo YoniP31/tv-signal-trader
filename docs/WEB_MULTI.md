@@ -43,17 +43,18 @@ ACCOUNT_50K_MAX_BALANCE_LIVE=53500
 
 **How to test:** temporarily set a MAX (or MIN) very close to an account's real current balance, run `web_multi`, and confirm it removes that portfolio from TradingGenerator instead of trading it. Remember to set the values back afterward.
 
-## Daily profit limit
+## Daily profit/loss limits
 
-An optional per-account cap on today's profit, read from Tradovate's broker-panel Account Summary tab ("Total P/L", which resets daily on Tradovate's side). Once an account's Total P/L reaches the limit, that account stops opening new trades for the rest of the day — quarantined the same way as a manual close or a rejected order — but keeps reporting/monitoring any position already open normally. Set in `.env`:
+An optional per-account cap on today's profit and/or loss, read from Tradovate's broker-panel Account Summary tab ("Total P/L", which resets daily on Tradovate's side). Once an account's Total P/L reaches either limit, that account stops opening new trades for the rest of the day — quarantined the same way as a manual close or a rejected order — but keeps reporting/monitoring any position already open normally. Set in `.env`:
 
 ```
 DAILY_PROFIT_LIMIT=500
+DAILY_LOSS_LIMIT=500
 ```
 
-Leave commented out (the default) to disable it entirely.
+`DAILY_LOSS_LIMIT` is a positive number (the max acceptable loss) — the account is quarantined once Total P/L drops to/below its negative. Leave either (or both) commented out (the default) to disable that side entirely.
 
-**How to test:** set the limit just below an account's current Total P/L, run `web_multi`, and confirm the console prints that the account hit its daily profit limit and is quarantined, rather than opening the next signal for it.
+**How to test:** set a limit just inside an account's current Total P/L (e.g. `DAILY_PROFIT_LIMIT` just below it if currently profitable, or `DAILY_LOSS_LIMIT` just below the current loss if currently negative), run `web_multi`, and confirm the console prints that the account hit its daily profit/loss limit and is quarantined, rather than opening the next signal for it.
 
 ## Take-profit capping
 

@@ -104,6 +104,14 @@ _DEFAULT_TP_CAP_BUFFER_RANGE = (50, 200)
 # company. Overridable via MAX_POSITIONS_PER_COMPANY in .env.
 _DEFAULT_MAX_POSITIONS_PER_COMPANY = 3
 
+# web_multi only: when a trade's take-profit/stop-loss would push today's
+# P&L (see trading.read_total_pl) past DAILY_PROFIT_LIMIT/DAILY_LOSS_LIMIT,
+# it's capped so the result instead lands a random buffer in this $ range
+# short of the limit -- same idea as TP_CAP_BUFFER above, applied to today's
+# P&L instead of account balance. Overridable via DAILY_PNL_CAP_BUFFER_MIN/
+# DAILY_PNL_CAP_BUFFER_MAX in .env.
+_DEFAULT_DAILY_PNL_CAP_BUFFER_RANGE = (50, 200)
+
 
 ENV_FILE = os.path.join(APP_DIR, ".env")
 
@@ -222,7 +230,8 @@ def _reload_env():
     global NO_TRADE_START_TIME, NO_TRADE_END_TIME
     global TP_CAP_BUFFER_RANGE
     global MAX_POSITIONS_PER_COMPANY
-    global DAILY_PROFIT_LIMIT
+    global DAILY_PROFIT_LIMIT, DAILY_LOSS_LIMIT
+    global DAILY_PNL_CAP_BUFFER_RANGE
     _env = _load_env_file(ENV_FILE)
     TRADINGGENERATOR_USERNAME = _env.get("TRADINGGENERATOR_USERNAME", "")
     TRADINGGENERATOR_PASSWORD = _env.get("TRADINGGENERATOR_PASSWORD", "")
@@ -268,10 +277,20 @@ def _reload_env():
         _env.get("MAX_POSITIONS_PER_COMPANY") or _DEFAULT_MAX_POSITIONS_PER_COMPANY
     )
 
-    # web_multi only. Unset by default (no limit) -- an opt-in risk control,
-    # not a universal default like the balance tiers above.
+    # web_multi only. Both unset by default (no limit) -- opt-in risk
+    # controls, not universal defaults like the balance tiers above.
+    # DAILY_LOSS_LIMIT is a positive $ amount (the max acceptable loss),
+    # compared against today's P&L going negative past it.
     daily_profit_limit_raw = _env.get("DAILY_PROFIT_LIMIT", "").strip()
     DAILY_PROFIT_LIMIT = float(daily_profit_limit_raw) if daily_profit_limit_raw else None
+    daily_loss_limit_raw = _env.get("DAILY_LOSS_LIMIT", "").strip()
+    DAILY_LOSS_LIMIT = float(daily_loss_limit_raw) if daily_loss_limit_raw else None
+
+    default_pnl_buffer_min, default_pnl_buffer_max = _DEFAULT_DAILY_PNL_CAP_BUFFER_RANGE
+    DAILY_PNL_CAP_BUFFER_RANGE = (
+        float(_env.get("DAILY_PNL_CAP_BUFFER_MIN") or default_pnl_buffer_min),
+        float(_env.get("DAILY_PNL_CAP_BUFFER_MAX") or default_pnl_buffer_max),
+    )
 
 
 _reload_env()
