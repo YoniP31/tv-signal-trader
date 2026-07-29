@@ -8,6 +8,7 @@ from . import signal_source
 from . import state
 from . import status
 from . import trading
+from .logging_utils import timestamped_print as print
 
 
 def main():

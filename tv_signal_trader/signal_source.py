@@ -6,6 +6,7 @@ from . import humanize
 from . import status
 from . import trading
 from . import tradinggenerator as tg
+from .logging_utils import timestamped_print as print
 
 # Circuit breaker for failures that aren't tied to a specific company/
 # portfolio (missing trade parameters, order execution) -- those retry by

@@ -6,6 +6,7 @@ from . import browser
 from . import config
 from . import state
 from . import status
+from .logging_utils import timestamped_print as print
 
 
 class LoginMonitor:

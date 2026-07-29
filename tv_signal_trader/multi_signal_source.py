@@ -27,6 +27,7 @@ from . import signal_source
 from . import status
 from . import trading
 from . import tradinggenerator as tg
+from .logging_utils import timestamped_print as print
 
 
 def check_eligibility(next_company, next_portfolio, next_direction, engaged_company, open_positions):

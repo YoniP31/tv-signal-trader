@@ -7,6 +7,7 @@ from selenium.webdriver.common.keys import Keys
 from . import config
 from . import humanize
 from . import panel
+from .logging_utils import timestamped_print as print
 
 
 def _find_trade_button(driver):

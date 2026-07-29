@@ -102,7 +102,11 @@ Refreshed on startup/shutdown, whenever `web` touches something worth recording,
 
 Every repeated/idle wait in the codebase — the background `LoginMonitor` heartbeat, waiting for an open position to close (`wait_for_close` in `web`, the equivalent poll in `web_multi`), and waiting for a locked/unavailable rotation to free up — draws a fresh random duration from a range each time, rather than sleeping a fixed interval. This is deliberate: ticking at a perfectly regular cadence for hours or days is exactly the kind of timing signature that makes automated usage easier to spot, so these are jittered instead. The ranges are hardcoded in `config.py` (`HEARTBEAT_POLL_RANGE`, `POSITION_POLL_RANGE`, `PORTFOLIO_RETRY_RANGE`) rather than `.env`-configurable, since they exist purely for this reason rather than being something to tune per deployment. Short, bounded UI-confirmation loops (waiting a few seconds for a tab or connection to confirm) are left alone — they're brief, active-action ticks, not long-running idle polling.
 
-### 9. Interactive command loop
+### 9. Timestamped console output
+
+Every `print()` in the app (except the interactive first-run setup wizard, which is a one-time prompt flow rather than an ongoing log) is prefixed with a `[HH:MM:SS]` timestamp (local machine time), via [tv_signal_trader/logging_utils.py](tv_signal_trader/logging_utils.py) — each module imports `timestamped_print` in place of the built-in `print`, so no individual print call needed to change. Useful for a long-running unattended session's console/log capture, where otherwise there's no way to tell when something happened without cross-referencing the system clock.
+
+### 10. Interactive command loop
 
 Running the script drops you into a `>` prompt that accepts:
 
@@ -115,7 +119,7 @@ Running the script drops you into a `>` prompt that accepts:
 | `setup`      | Re-run setup to change your TradingGenerator credentials or Tradovate accounts |
 | `quit`       | Closes the browser and exits                                         |
 
-### 10. Multi-position trading — `web_multi`
+### 11. Multi-position trading — `web_multi`
 
 A second automatic trading command, in [tv_signal_trader/multi_signal_source.py](tv_signal_trader/multi_signal_source.py), that can hold several positions open at once (one per portfolio, up to `MAX_POSITIONS_PER_COMPANY` per company, default 3, only one company "engaged" at a time) instead of `web`'s one-trade-at-a-time flow. `web` itself is untouched by this — the two are independent, side by side. Full details, plus how to test each piece, are in **[docs/WEB_MULTI.md](docs/WEB_MULTI.md)**.
 

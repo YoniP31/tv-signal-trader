@@ -2,6 +2,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 
 from . import humanize
+from .logging_utils import timestamped_print as print
 
 
 def set_field(driver, input_el, value):
