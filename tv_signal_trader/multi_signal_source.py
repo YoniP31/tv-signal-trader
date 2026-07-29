@@ -91,6 +91,36 @@ def _ensure_tradovate_connection(driver, company, connected_company):
     return company
 
 
+def _select_and_verify(driver, company, portfolio, attempts=3):
+    """Selects `company`/`portfolio` in TradingGenerator and confirms the
+    page actually landed on that exact pair before a caller reports a
+    result or removes a portfolio there.
+
+    TradingGenerator's Trade Result prompt (#tradeResultSection) is a
+    single, page-global element reflecting whatever's currently active --
+    select_company/select_portfolio's own return values only say "a
+    matching tab was found and clicked", not "this is now confirmed
+    active". Acting on a failed or merely-assumed selection risks
+    reporting/removing the wrong portfolio entirely (e.g. right after this
+    exact portfolio was just deleted for hitting its balance limit, or a
+    transient DOM lag). Retries a few times before giving up, since a
+    mismatch is often transient rather than permanent.
+
+    Returns True only once tradinggenerator.read_active_company_portfolio
+    confirms (company, portfolio) is actually selected.
+    """
+    for attempt in range(attempts):
+        if tg.select_company(driver, company) and tg.select_portfolio(driver, portfolio):
+            active_company, active_portfolio = tg.read_active_company_portfolio(driver)
+            if active_company == company and active_portfolio == portfolio:
+                return True
+        if attempt < attempts - 1:
+            humanize.pause(0.5, 1.0)
+    print(f"  [WARN] Could not confirm '{company} / {portfolio}' is actually selected in "
+          "TradingGenerator after retrying - skipping rather than risk acting on the wrong portfolio.")
+    return False
+
+
 def _refresh_open_positions(driver, web_tab, tv_tab, open_positions, connected_company, quarantined):
     """Checks every tracked open position's bracket status once, reporting
     (or quarantining, for a manual close/liquidation) and removing any that
@@ -148,8 +178,10 @@ def _refresh_open_positions(driver, web_tab, tv_tab, open_positions, connected_c
                     daily_limit_reached = True
 
         driver.switch_to.window(web_tab)
-        tg.select_company(driver, company)
-        tg.select_portfolio(driver, portfolio)
+        if not _select_and_verify(driver, company, portfolio):
+            print(f"  [WARN] Could not safely select '{company} / {portfolio}' to report its "
+                  "result - will retry next cycle.")
+            continue
 
         if outcome == 'manual_close':
             print(f"  [WARN] '{company} / {portfolio}' appears to have been closed manually or "
@@ -226,10 +258,12 @@ def _open_position(driver, web_tab, tv_tab, params, connected_company):
         print(f"  [WARN] Account balance already outside its allowed range - "
               f"removing '{portfolio}' instead of trading.")
         driver.switch_to.window(web_tab)
-        tg.select_company(driver, company)
-        tg.select_portfolio(driver, portfolio)
-        tg.remove_portfolio(driver, portfolio)
-        status.mark_portfolio_removed(company, portfolio, 'balance outside allowed range (blown/hit target)')
+        if _select_and_verify(driver, company, portfolio):
+            tg.remove_portfolio(driver, portfolio)
+            status.mark_portfolio_removed(company, portfolio, 'balance outside allowed range (blown/hit target)')
+        else:
+            print(f"  [WARN] Could not safely select '{company} / {portfolio}' to remove it - "
+                  "will retry the next time it's attempted.")
         return 'failed', connected_company, None
 
     status.mark_portfolio_available(company, portfolio)
@@ -261,9 +295,25 @@ def _open_position(driver, web_tab, tv_tab, params, connected_company):
     bracket = trading.find_working_bracket(driver)
     tp_id, sl_id = bracket.get('tp'), bracket.get('sl')
     if not tp_id or not sl_id:
-        print(f"  [FAIL] Could not confirm bracket IDs after opening '{portfolio}' - "
-              "can't track this position reliably.")
-        return 'failed', connected_company, None
+        # The position may have already resolved (hit TP/SL almost
+        # instantly) in the moment between place_order's own confirmation
+        # and this re-check, rather than the bracket genuinely never having
+        # been created -- check the last bracket regardless of status
+        # before giving up, so a real fill doesn't get misreported as Not
+        # Taken and silently lost from tracking until the next restart.
+        last_bracket = trading.find_last_bracket(driver)
+        last_tp_id, last_sl_id = last_bracket.get('tp'), last_bracket.get('sl')
+        if last_tp_id and last_sl_id:
+            quick_outcome = trading.check_bracket_status(driver, last_tp_id, last_sl_id)
+            if quick_outcome in ('tp', 'sl', 'manual_close'):
+                print(f"  [WARN] '{company} / {portfolio}' resolved before its bracket could be "
+                      f"confirmed as working ({quick_outcome}) - tracking it as already-closed so "
+                      "it gets reported normally.")
+                tp_id, sl_id = last_tp_id, last_sl_id
+        if not tp_id or not sl_id:
+            print(f"  [FAIL] Could not confirm bracket IDs after opening '{portfolio}' - "
+                  "can't track this position reliably.")
+            return 'failed', connected_company, None
 
     entry = {
         'tp_id': tp_id,
@@ -324,8 +374,11 @@ def _reconcile_open_positions_at_startup(driver, web_tab, tv_tab):
             # pending trade's original parameters until a result is
             # reported, so recover them from there rather than guessing.
             driver.switch_to.window(web_tab)
-            tg.select_company(driver, company)
-            tg.select_portfolio(driver, portfolio)
+            if not _select_and_verify(driver, company, portfolio):
+                print(f"  [WARN] '{company} / {portfolio}' has an open position but couldn't be "
+                      "safely selected in TradingGenerator to recover its parameters - leaving it "
+                      "for manual review.")
+                continue
             params = tg.read_trade_parameters(driver)
             missing = [k for k in ('asset', 'direction', 'contracts', 'sl_ticks', 'tp_ticks', 'account_type')
                        if params.get(k) is None]
@@ -354,8 +407,10 @@ def _reconcile_open_positions_at_startup(driver, web_tab, tv_tab):
             continue
 
         driver.switch_to.window(web_tab)
-        tg.select_company(driver, company)
-        tg.select_portfolio(driver, portfolio)
+        if not _select_and_verify(driver, company, portfolio):
+            print(f"  [WARN] '{company} / {portfolio}' couldn't be safely selected in "
+                  "TradingGenerator to check for a pending Trade Result - skipping.")
+            continue
         if not tg.has_pending_trade_result(driver):
             continue
 
@@ -372,8 +427,10 @@ def _reconcile_open_positions_at_startup(driver, web_tab, tv_tab):
         outcome = trading.check_bracket_status(driver, tp_id, sl_id)
 
         driver.switch_to.window(web_tab)
-        tg.select_company(driver, company)
-        tg.select_portfolio(driver, portfolio)
+        if not _select_and_verify(driver, company, portfolio):
+            print(f"  [WARN] '{company} / {portfolio}' has an unreported Trade Result prompt but "
+                  "couldn't be safely re-selected to report it - leaving it for manual review.")
+            continue
 
         if outcome == 'manual_close':
             print(f"  [WARN] '{company} / {portfolio}' closed manually or was liquidated while the "
@@ -627,8 +684,10 @@ def run_web_loop_multi(driver):
 
             def _report_not_taken_for(portfolio):
                 driver.switch_to.window(web_tab)
-                tg.select_company(driver, company)
-                tg.select_portfolio(driver, portfolio)
+                if not _select_and_verify(driver, company, portfolio):
+                    print(f"  [WARN] Could not safely select '{company} / {portfolio}' to report "
+                          "Not Taken - skipping (it may have just been removed).")
+                    return
                 tg.report_trade_result(driver, 'not_taken')
                 status.record_trade_result(
                     company, portfolio,
