@@ -62,6 +62,12 @@ If a trade's take-profit would push an account's balance *past* its maximum, the
 
 **How to test:** get an account's balance close to its maximum, then let it take a trade whose full take-profit would cross that maximum — check the console output for a line saying the TP was capped, and confirm the resulting order's TP ticks are smaller than TradingGenerator's original number.
 
+## Daily P&L capping
+
+Same idea as take-profit capping above, but based on today's P&L (`DAILY_PROFIT_LIMIT`/`DAILY_LOSS_LIMIT`) instead of account balance, and it can shrink *either* side of the trade: a take-profit that would push today's P&L past `DAILY_PROFIT_LIMIT` gets shrunk, and a stop-loss that would push today's P&L past (i.e. below) `-DAILY_LOSS_LIMIT` gets shrunk too — each independently, by a random amount between `DAILY_PNL_CAP_BUFFER_MIN` and `DAILY_PNL_CAP_BUFFER_MAX` dollars (default $50–$200) short of the relevant limit. Only applies to whichever side has a limit configured.
+
+**How to test:** with `DAILY_PROFIT_LIMIT`/`DAILY_LOSS_LIMIT` set, get today's P&L close to one of them, then let a trade generate whose full TP (or SL) would cross it — check the console for a line saying the TP or SL was capped, and confirm the resulting order's ticks are smaller than TradingGenerator's original number.
+
 ## No-trade window
 
 A second, optional time window inside the main trading session where the bot simply won't start any *new* trades — useful for a lunch break or a period you don't want to trade through. Positions already open keep running and get reported normally; only new trades are paused. Set in `.env`:

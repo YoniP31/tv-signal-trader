@@ -289,15 +289,26 @@ def _open_position(driver, web_tab, tv_tab, params, connected_company):
                   f"({total_pl:.2f} <= {-config.DAILY_LOSS_LIMIT:.2f}) - not trading until the next session.")
             return 'daily_loss_limit_reached', connected_company, None
 
-    tp_ticks = trading.adjust_tp_for_max_balance(
+    tp_ticks_after_balance_cap = trading.adjust_tp_for_max_balance(
         balance, params['tp_ticks'], params['tp_dollars'], tier_range['max']
     )
+    # Independently derived from the *original*, unadjusted ticks/dollars
+    # (not tp_ticks_after_balance_cap) -- each capping function computes its
+    # own $-per-tick ratio from the pair it's given, so chaining an already-
+    # shrunk tick count against the original dollar figure would silently
+    # produce a wrong ratio. Taking the smaller of the two results respects
+    # whichever constraint is tighter.
+    tp_ticks_after_pnl_cap, sl_ticks = trading.adjust_ticks_for_daily_pnl(
+        total_pl, params['tp_ticks'], params['tp_dollars'], params['sl_ticks'], params['sl_dollars'],
+        config.DAILY_PROFIT_LIMIT, config.DAILY_LOSS_LIMIT,
+    )
+    tp_ticks = min(tp_ticks_after_balance_cap, tp_ticks_after_pnl_cap)
 
     direction = {'LONG': 'buy', 'SHORT': 'sell'}.get(params['direction'])
     print(f"\n  Executing: {direction.upper()} | TP={tp_ticks} ticks | "
-          f"SL={params['sl_ticks']} ticks | contracts={params['contracts']} | '{company} / {portfolio}'")
+          f"SL={sl_ticks} ticks | contracts={params['contracts']} | '{company} / {portfolio}'")
     entered = trading.place_order(
-        driver, tp_ticks=tp_ticks, sl_ticks=params['sl_ticks'], side=direction, units=params['contracts'],
+        driver, tp_ticks=tp_ticks, sl_ticks=sl_ticks, side=direction, units=params['contracts'],
     )
     if not entered:
         if trading.check_entry_rejected(driver):
@@ -336,7 +347,7 @@ def _open_position(driver, web_tab, tv_tab, params, connected_company):
         'asset': params['asset'],
         'direction': params['direction'],
         'contracts': params['contracts'],
-        'sl_ticks': params['sl_ticks'],
+        'sl_ticks': sl_ticks,
         'tp_ticks': tp_ticks,
     }
     print(f"\n[OK] '{company} / {portfolio}' opened and tracked.")

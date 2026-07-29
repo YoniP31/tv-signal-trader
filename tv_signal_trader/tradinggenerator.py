@@ -467,6 +467,7 @@ def read_trade_parameters(driver):
     company, portfolio = read_active_company_portfolio(driver)
     account_type = read_active_account_type(driver)
     tp_dollars = _extract_dollar_amount(driver, "takeProfitSub")
+    sl_dollars = _extract_dollar_amount(driver, "stopLossSub")
 
     next_company = _extract_by_class(driver, "next-acc-firm")
     next_portfolio = _extract_by_class(driver, "next-acc-account")
@@ -480,6 +481,7 @@ def read_trade_parameters(driver):
         'sl_ticks': int(sl_match.group(1)) if sl_match else None,
         'tp_ticks': int(tp_match.group(1)) if tp_match else None,
         'tp_dollars': tp_dollars,
+        'sl_dollars': sl_dollars,
         'portfolio': portfolio,
         'company': company,
         'account_type': account_type,

@@ -900,3 +900,49 @@ def adjust_tp_for_max_balance(balance, tp_ticks, tp_dollars, max_balance, buffer
           f"{max_balance:.2f}) - capping TP from {tp_ticks} to {adjusted_ticks} ticks "
           f"(buffer ${buffer:.2f} above max).")
     return adjusted_ticks
+
+
+def adjust_ticks_for_daily_pnl(total_pl, tp_ticks, tp_dollars, sl_ticks, sl_dollars,
+                                daily_profit_limit, daily_loss_limit, buffer_range=None):
+    """If hitting this trade's take-profit/stop-loss would push today's P&L
+    (see read_total_pl) past daily_profit_limit/daily_loss_limit, caps the
+    relevant side so the result instead lands a random buffer (dollars,
+    buffer_range) short of the limit -- same idea as
+    adjust_tp_for_max_balance, but applied to today's cumulative P&L
+    instead of account balance, and to both sides: a losing trade's
+    stop-loss can push today's P&L past the daily loss limit just as a
+    winning trade's take-profit can push it past the daily profit limit.
+
+    Pure function, no DOM access. Returns (tp_ticks, sl_ticks) unchanged
+    for whichever side has no limit configured, an unusable dollar figure
+    (e.g. zero), an unreadable total_pl, or wouldn't cross its limit.
+    Never returns less than 1 tick for either side.
+    """
+    buffer_range = buffer_range if buffer_range is not None else config.DAILY_PNL_CAP_BUFFER_RANGE
+    adjusted_tp_ticks = tp_ticks
+    adjusted_sl_ticks = sl_ticks
+
+    if total_pl is None:
+        return adjusted_tp_ticks, adjusted_sl_ticks
+
+    if daily_profit_limit is not None and tp_ticks and tp_dollars:
+        if total_pl + tp_dollars > daily_profit_limit:
+            dollar_per_tick = tp_dollars / tp_ticks
+            buffer = random.uniform(*buffer_range)
+            target_profit = (daily_profit_limit - buffer) - total_pl
+            adjusted_tp_ticks = max(1, round(target_profit / dollar_per_tick))
+            print(f"  TP would push today's P&L past its daily profit limit ({total_pl:.2f} + "
+                  f"{tp_dollars:.2f} > {daily_profit_limit:.2f}) - capping TP from {tp_ticks} to "
+                  f"{adjusted_tp_ticks} ticks (buffer ${buffer:.2f} below limit).")
+
+    if daily_loss_limit is not None and sl_ticks and sl_dollars:
+        if total_pl - sl_dollars < -daily_loss_limit:
+            dollar_per_tick = sl_dollars / sl_ticks
+            buffer = random.uniform(*buffer_range)
+            target_loss = total_pl + daily_loss_limit - buffer
+            adjusted_sl_ticks = max(1, round(target_loss / dollar_per_tick))
+            print(f"  SL would push today's P&L past its daily loss limit ({total_pl:.2f} - "
+                  f"{sl_dollars:.2f} < {-daily_loss_limit:.2f}) - capping SL from {sl_ticks} to "
+                  f"{adjusted_sl_ticks} ticks (buffer ${buffer:.2f} above limit).")
+
+    return adjusted_tp_ticks, adjusted_sl_ticks
