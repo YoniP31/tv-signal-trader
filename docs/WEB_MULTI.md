@@ -56,6 +56,10 @@ DAILY_LOSS_LIMIT=500
 
 **How to test:** set a limit just inside an account's current Total P/L (e.g. `DAILY_PROFIT_LIMIT` just below it if currently profitable, or `DAILY_LOSS_LIMIT` just below the current loss if currently negative), run `web_multi`, and confirm the console prints that the account hit its daily profit/loss limit and is quarantined, rather than opening the next signal for it.
 
+As a bulletproofing measure on top of correctly reporting results (which is what stops TradingGenerator itself from offering a new trade there), the bot also refuses to open a *new* trade once Total P/L is already within `DAILY_PNL_CAP_BUFFER_MAX` dollars of either limit — rather than letting the take-profit/stop-loss capping below try to size an ever-thinner trade into whatever room is left, it just quarantines outright once that margin is too tight.
+
+**How to test:** get Total P/L within `DAILY_PNL_CAP_BUFFER_MAX` dollars of a configured limit, run `web_multi`, and confirm it refuses to open the next signal there ("too little room to safely size a trade") rather than opening a heavily-capped trade.
+
 ## Take-profit capping
 
 If a trade's take-profit would push an account's balance *past* its maximum, the bot shrinks the take-profit so the account instead lands just above the maximum — by a random amount between `TP_CAP_BUFFER_MIN` and `TP_CAP_BUFFER_MAX` dollars (default $50–$200) — rather than blowing far past it. This keeps profit-target accounts from wildly overshooting once they're close to passing.

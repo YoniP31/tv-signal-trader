@@ -280,13 +280,24 @@ def _open_position(driver, web_tab, tv_tab, params, connected_company):
         if trading.click_account_summary_tab(driver):
             total_pl = trading.read_total_pl(driver)
     if total_pl is not None:
-        if config.DAILY_PROFIT_LIMIT is not None and total_pl >= config.DAILY_PROFIT_LIMIT:
-            print(f"  [WARN] '{company} / {portfolio}' already hit its daily profit limit "
-                  f"({total_pl:.2f} >= {config.DAILY_PROFIT_LIMIT:.2f}) - not trading until the next session.")
+        # Bulletproofing beyond "report correctly and TradingGenerator
+        # won't offer a new trade": gated on the buffer's *max* rather than
+        # the raw limit, so a trade is refused outright once there's too
+        # little room left to safely size (and possibly buffer) one,
+        # rather than letting adjust_ticks_for_daily_pnl try to cram a
+        # sliver-thin TP/SL into whatever's left (down to its 1-tick floor,
+        # which could itself land past the limit if the true remaining
+        # room is worth less than one tick).
+        pnl_buffer_max = config.DAILY_PNL_CAP_BUFFER_RANGE[1]
+        if config.DAILY_PROFIT_LIMIT is not None and total_pl >= config.DAILY_PROFIT_LIMIT - pnl_buffer_max:
+            print(f"  [WARN] '{company} / {portfolio}' is within ${pnl_buffer_max:.2f} of its daily "
+                  f"profit limit ({total_pl:.2f} >= {config.DAILY_PROFIT_LIMIT - pnl_buffer_max:.2f}) - "
+                  "too little room to safely size a trade. Not trading until the next session.")
             return 'daily_profit_limit_reached', connected_company, None
-        if config.DAILY_LOSS_LIMIT is not None and total_pl <= -config.DAILY_LOSS_LIMIT:
-            print(f"  [WARN] '{company} / {portfolio}' already hit its daily loss limit "
-                  f"({total_pl:.2f} <= {-config.DAILY_LOSS_LIMIT:.2f}) - not trading until the next session.")
+        if config.DAILY_LOSS_LIMIT is not None and total_pl <= -config.DAILY_LOSS_LIMIT + pnl_buffer_max:
+            print(f"  [WARN] '{company} / {portfolio}' is within ${pnl_buffer_max:.2f} of its daily "
+                  f"loss limit ({total_pl:.2f} <= {-config.DAILY_LOSS_LIMIT + pnl_buffer_max:.2f}) - "
+                  "too little room to safely size a trade. Not trading until the next session.")
             return 'daily_loss_limit_reached', connected_company, None
 
     tp_ticks_after_balance_cap = trading.adjust_tp_for_max_balance(
