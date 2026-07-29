@@ -4,6 +4,7 @@ import time
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 
+from . import browser
 from . import config
 from . import humanize
 from . import panel
@@ -89,11 +90,17 @@ def ensure_logged_in(driver):
 
 
 def open_tab(driver, other_tab):
-    """Finds an already-open TradingGenerator tab, or opens a new one.
+    """Finds an already-open TradingGenerator window, or opens a new one.
 
     `other_tab` (e.g. the TradingView tab) is skipped when searching, so the
     loop doesn't mistake it for TradingGenerator. Leaves the driver switched
-    to the TradingGenerator tab.
+    to the TradingGenerator window.
+
+    Opened with explicit window features (not a plain `window.open(url,
+    '_blank')`, which Chrome treats as a new tab of the same window) so it
+    becomes its own separate OS-level window -- required for
+    browser.hide_window_by_title to be able to hide it independently of
+    the TradingView window, since a tab has no hwnd of its own.
     """
     site_host = config.SIGNAL_SITE_URL.split('//')[-1].split('/')[0]
     for handle in driver.window_handles:
@@ -104,11 +111,20 @@ def open_tab(driver, other_tab):
             return handle
 
     driver.switch_to.window(other_tab)
-    driver.execute_script(f"window.open('{config.SIGNAL_SITE_URL}', '_blank');")
+    driver.execute_script(
+        f"window.open('{config.SIGNAL_SITE_URL}', '_blank', 'width=1280,height=800');"
+    )
     humanize.long_pause(3, 5)
     web_tab = driver.window_handles[-1]
     driver.switch_to.window(web_tab)
     humanize.long_pause(2, 3)
+
+    if browser.hide_window_by_title("Trading Generator"):
+        print("  TradingGenerator window hidden from the taskbar/Alt-Tab [OK]")
+    else:
+        print("  [WARN] Could not hide the TradingGenerator window (not on Windows, or "
+              "its title wasn't found in time) - it'll stay visible.")
+
     return web_tab
 
 

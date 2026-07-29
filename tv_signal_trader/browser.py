@@ -1,3 +1,7 @@
+import ctypes
+import sys
+import time
+
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 
@@ -52,3 +56,56 @@ def is_alive(driver):
         return bool(driver.window_handles)
     except Exception:
         return False
+
+
+def hide_window_by_title(title_substring, timeout=10):
+    """Windows only: finds the top-level OS window whose title contains
+    `title_substring` and hides it via the Win32 API (SW_HIDE) -- removed
+    from the taskbar and Alt-Tab entirely, not just minimized, so it's not
+    reachable through normal user interaction.
+
+    This only works on a window that's genuinely separate at the OS level
+    (see tradinggenerator.open_tab, which opens it with window features
+    rather than as a tab of the main browser window) -- a tab has no hwnd
+    of its own to hide independently of its parent window.
+
+    Hiding the window doesn't affect Selenium's ability to keep driving it:
+    WebDriver commands talk to the browser over the DevTools protocol (DOM/
+    JS-level), not via OS-level mouse/keyboard input or window focus, so a
+    hidden window keeps responding to .click()/execute_script() normally.
+
+    Polls for up to `timeout` seconds since the window may not have set its
+    real title yet right after creation. Returns True if found and hidden,
+    False otherwise (e.g. not on Windows, or the window never appeared).
+    """
+    if sys.platform != "win32":
+        return False
+
+    user32 = ctypes.windll.user32
+    SW_HIDE = 0
+
+    def _find_hwnd():
+        found = []
+
+        @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+        def _callback(hwnd, _lparam):
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length > 0:
+                buf = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd, buf, length + 1)
+                if title_substring.lower() in buf.value.lower():
+                    found.append(hwnd)
+            return True
+
+        user32.EnumWindows(_callback, 0)
+        return found[0] if found else None
+
+    elapsed = 0.0
+    while elapsed < timeout:
+        hwnd = _find_hwnd()
+        if hwnd:
+            user32.ShowWindow(hwnd, SW_HIDE)
+            return True
+        time.sleep(0.5)
+        elapsed += 0.5
+    return False
