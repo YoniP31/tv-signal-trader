@@ -1,13 +1,13 @@
-# `web_multi` — the multi-position trading loop
+# `web` / `web_multi` — the trading loop
 
-`web_multi` is a second automatic trading command, alongside the original `web`. `web` trades one signal at a time — generate, open, wait for it to close, report, repeat. `web_multi` can hold several positions open at once, across several accounts of the same prop firm, under the rules below. The two commands are independent: `web` never changed and works exactly as before; `web_multi` lives in its own file, [tv_signal_trader/multi_signal_source.py](../tv_signal_trader/multi_signal_source.py).
+`web` and `web_multi` are the same engine, [tv_signal_trader/multi_signal_source.py](../tv_signal_trader/multi_signal_source.py) — not two separate implementations. The only difference is `MAX_POSITIONS_PER_COMPANY`: `web` forces it to 1, so combined with rule 3 below ("only one company engaged at a time") it trades one signal at a time, same as it always has. `web_multi` uses whatever's configured in `.env` (default 3), allowing several concurrent positions per company. Everything else on this page — quarantining, daily limits, crash recovery, the sweep, all of it — applies identically to both commands.
 
-Type `web_multi` at the `>` prompt to run it, same as `web`.
+Type `web` or `web_multi` at the `>` prompt to run one.
 
 ## The concurrency rules
 
 1. **One open position per portfolio.** A portfolio that already has a trade open won't get a second one until the first closes.
-2. **At most `MAX_POSITIONS_PER_COMPANY` open positions per company at once** (default 3, set in `.env`).
+2. **At most `MAX_POSITIONS_PER_COMPANY` open positions per company at once** (default 3, set in `.env`; forced to 1 for the `web` command regardless of this setting).
 3. **Only one company may have open positions at a time.** If a signal comes in for a different company while the current one still has open positions, it waits for all of them to close first, then switches over.
 
 The bot decides whether it's allowed to open a signal *before* pressing "Generate New Trade" — it always knows the next portfolio TradingGenerator wants to trade next (from the "Next Portfolio to Trade" box), and checks it against the rules above first.

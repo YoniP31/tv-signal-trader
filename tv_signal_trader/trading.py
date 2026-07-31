@@ -695,10 +695,10 @@ def check_bracket_status(driver, tp_id, sl_id):
 
     A filled TP/SL order auto-cancels its linked sibling, so that Status is
     a direct, reliable signal on its own -- no need to infer the outcome
-    from price or P&L sign (same reasoning as wait_for_close, generalized
-    here to a specific bracket pair rather than "whatever's working now",
-    so callers tracking several concurrent positions can check each one by
-    its own IDs instead of only ever the single currently-working bracket).
+    from price or P&L sign. Checks a specific, already-known bracket pair
+    by ID rather than "whatever's currently working", so callers tracking
+    several concurrent positions can check each one independently instead
+    of only ever the single currently-working bracket.
 
     Returns 'tp' (take profit filled), 'sl' (stop loss filled),
     'manual_close' (both resolved without either filling -- the position
@@ -741,65 +741,6 @@ def check_entry_rejected(driver):
         return false;
     """)
     return bool(result)
-
-
-def wait_for_close(driver, timeout=None, poll_interval=None):
-    """Polls the broker's Orders table until the take-profit or stop-loss
-    bracket order fills, returning 'tp' or 'sl'.
-
-    A filled TP/SL order auto-cancels its linked sibling (confirmed by
-    inspecting the real Orders table: the filled leg shows Status "Filled",
-    the other "Cancelled"), so that Status is a direct, reliable signal --
-    no need to infer the outcome from price or P&L sign. The specific
-    bracket order IDs are captured once up front and polled by ID from then
-    on, rather than re-matched by Type each time, so an older resolved
-    order from a previous trade can never be mistaken for the current one.
-
-    `poll_interval`, if given, is used as a fixed wait between checks;
-    otherwise (the default) each wait is a fresh random duration drawn from
-    config.POSITION_POLL_RANGE, so this doesn't tick at a perfectly regular
-    interval for however long the position stays open (minutes to ~24h).
-
-    Returns None if the wait times out, the current bracket can't be found,
-    or it resolves without either side actually filling (e.g. the position
-    was closed manually) -- misreporting which side a trade closed on is
-    worse than not reporting a result at all.
-    """
-    timeout = timeout if timeout is not None else config.TRADE_CLOSE_TIMEOUT_SECONDS
-
-    print("  Waiting for the position to close...")
-    if not click_orders_tab(driver):
-        print("  Could not open the broker panel/Orders tab.")
-        return None
-
-    bracket = find_working_bracket(driver)
-    tp_id, sl_id = bracket.get('tp'), bracket.get('sl')
-    if not tp_id or not sl_id:
-        print(f"  Could not find the working TP/SL bracket orders (tp={tp_id}, sl={sl_id}).")
-        return None
-
-    elapsed = 0
-    while elapsed < timeout:
-        tp_status = _read_order_status(driver, tp_id)
-        sl_status = _read_order_status(driver, sl_id)
-
-        if tp_status == 'filled':
-            print("  Take Profit filled [OK]")
-            return 'tp'
-        if sl_status == 'filled':
-            print("  Stop Loss filled [OK]")
-            return 'sl'
-        if tp_status not in (None, 'working') and sl_status not in (None, 'working'):
-            print(f"  Bracket resolved without a fill (TP='{tp_status}', "
-                  f"SL='{sl_status}') - can't determine outcome.")
-            return None
-
-        wait_s = poll_interval if poll_interval is not None else random.uniform(*config.POSITION_POLL_RANGE)
-        time.sleep(wait_s)
-        elapsed += wait_s
-
-    print("  Timed out waiting for the position to close.")
-    return None
 
 
 def read_account_balance(driver):

@@ -47,8 +47,6 @@ DEV_TREAT_MINI_AS_MICRO = not _RUNNING_COMPILED
 # useful for debugging, e.g. to actually see what TradingGenerator is doing.
 HIDE_TRADINGGENERATOR_WINDOW = True
 
-TRADE_CLOSE_TIMEOUT_SECONDS = 24 * 60 * 60
-
 # Randomized polling ranges (hardcoded, not .env-configurable -- deliberately
 # so, since these exist purely to avoid a perfectly regular timing signature
 # during long unattended runs, not to be tuned per deployment). Shared by

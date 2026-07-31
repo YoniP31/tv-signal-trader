@@ -7,7 +7,6 @@ from . import humanize
 from . import monitor
 from . import multi_signal_source
 from . import setup_wizard
-from . import signal_source
 from . import state
 from . import status
 from . import trading
@@ -74,11 +73,13 @@ def main():
             cmd = input("> ").strip().lower()
             with state.session.driver_lock:
                 if cmd == "web":
-                    signal_source.run_web_loop(driver)
+                    # Same engine as 'web_multi' (see multi_signal_source.py),
+                    # just capped at one open position per company -- combined
+                    # with the engine's existing "only one company engaged at
+                    # a time" rule, that reproduces single-position-at-a-time
+                    # behavior without a separate implementation to maintain.
+                    multi_signal_source.run_web_loop_multi(driver, max_positions_per_company=1, command_name="web")
                 elif cmd == "web_multi":
-                    # Multi-position trading loop -- see multi_signal_source.py.
-                    # Still being built/verified step by step; 'web' is the
-                    # stable single-position path.
                     multi_signal_source.run_web_loop_multi(driver)
                 elif cmd == "buy":
                     trading.place_order(driver, tp_ticks=150, sl_ticks=150, side="buy")

@@ -1,7 +1,7 @@
-"""Multi-position trading loop -- a separate, still-evolving path alongside
-signal_source.run_web_loop()/the 'web' command, which stays untouched and
-single-position. See the approved plan (multi-position support) for the
-full design; built and checked step by step rather than all at once.
+"""The trading loop engine behind both the 'web' and 'web_multi' commands
+(see cli.py) -- they aren't separate implementations, just this same loop
+called with a different max_positions_per_company (1 for 'web', whatever's
+configured in .env for 'web_multi').
 
 Concurrency rules (confirmed with the user):
   - One open position per portfolio.
@@ -30,7 +30,8 @@ from . import tradinggenerator as tg
 from .logging_utils import timestamped_print as print
 
 
-def check_eligibility(next_company, next_portfolio, next_direction, engaged_company, open_positions):
+def check_eligibility(next_company, next_portfolio, next_direction, engaged_company, open_positions,
+                       max_positions_per_company=None):
     """Whether it's OK to generate+open a trade for next_company/next_portfolio
     right now, given which company is currently "engaged" (holds any open
     positions) and what's already open.
@@ -45,6 +46,11 @@ def check_eligibility(next_company, next_portfolio, next_direction, engaged_comp
     check for that call; the real check happens on the later post-generate
     call, once the candidate trade's direction is known.
 
+    `max_positions_per_company` overrides config.MAX_POSITIONS_PER_COMPANY
+    for this call when given (e.g. the 'web' command forces 1, reusing this
+    same engine instead of its own separate single-position implementation)
+    -- defaults to the configured value when None.
+
     Returns:
       - 'eligible': fine to generate and open now.
       - 'wait_different_company': a *different* company currently holds open
@@ -58,9 +64,9 @@ def check_eligibility(next_company, next_portfolio, next_direction, engaged_comp
         wait_different_company above), every currently-open position already
         belongs to next_company whenever there is one, so this only needs to
         compare directions, not re-check company.
-      - 'wait_company_cap': next_company is already at
-        config.MAX_POSITIONS_PER_COMPANY open positions -- must wait for at
-        least one to close before opening another.
+      - 'wait_company_cap': next_company is already at the max positions
+        allowed for this call -- must wait for at least one to close before
+        opening another.
     """
     if engaged_company is not None and engaged_company != next_company:
         return 'wait_different_company'
@@ -70,8 +76,11 @@ def check_eligibility(next_company, next_portfolio, next_direction, engaged_comp
         for (c, _p), position in open_positions.items():
             if c == next_company and position['direction'] != next_direction:
                 return 'wait_hedge_conflict'
+    max_positions = (
+        max_positions_per_company if max_positions_per_company is not None else config.MAX_POSITIONS_PER_COMPANY
+    )
     company_open_count = sum(1 for (c, _p) in open_positions if c == next_company)
-    if company_open_count >= config.MAX_POSITIONS_PER_COMPANY:
+    if company_open_count >= max_positions:
         return 'wait_company_cap'
     return 'eligible'
 
@@ -491,20 +500,21 @@ def _reconcile_open_positions_at_startup(driver, web_tab, tv_tab):
     return open_positions, connected_company
 
 
-def run_web_loop_multi(driver):
-    """Like signal_source.run_web_loop(), but supports several concurrent
-    open positions under the rules described at the top of this module.
+def run_web_loop_multi(driver, max_positions_per_company=None, command_name="web_multi"):
+    """The trading loop behind both the 'web' and 'web_multi' commands --
+    supports several concurrent open positions under the rules described at
+    the top of this module. 'web' is this same engine with
+    max_positions_per_company forced to 1 (see cli.py): combined with the
+    existing "only one company may be engaged at a time" rule, that
+    reproduces the single-position-at-a-time behavior 'web' used to
+    implement separately, so there's one engine instead of two to maintain.
 
     Every iteration: refresh every tracked open position's status first
     (reporting/freeing any that resolved), then check whether the next
     signal (per the previous trade's hint) is eligible to open right now.
     If not, wait a bit and refresh again -- positions accumulate in
-    `open_positions` and get drained opportunistically rather than the
-    single-position flow's one-at-a-time wait_for_close.
-
-    Session window, no-trade window, daily liquidated-account sweep, and
-    daily backup all work the same way as run_web_loop() (see there for
-    details) -- this reuses the same config/status plumbing.
+    `open_positions` and get drained opportunistically rather than a
+    strictly one-at-a-time wait-for-close.
 
     A portfolio whose position closes via manual close/liquidation (see
     _refresh_open_positions) is quarantined until the next session day:
@@ -519,7 +529,7 @@ def run_web_loop_multi(driver):
     positions seed `open_positions` directly; no new trade is generated
     until they've all drained (same wait as any other open position).
     """
-    print("\n[WEB-MULTI] Starting automatic multi-position trading loop (Ctrl+C to stop)...")
+    print(f"\n[{command_name.upper()}] Starting automatic trading loop (Ctrl+C to stop)...")
     tv_tab = driver.current_window_handle
     next_company = None
     next_portfolio = None
@@ -638,7 +648,10 @@ def run_web_loop_multi(driver):
             # is available before Generate is clicked) -- the hedge-conflict
             # check is skipped here and applied for real below, once
             # params['direction'] is known.
-            eligibility = check_eligibility(next_company, next_portfolio, None, engaged_company, open_positions)
+            eligibility = check_eligibility(
+                next_company, next_portfolio, None, engaged_company, open_positions,
+                max_positions_per_company=max_positions_per_company,
+            )
             if eligibility != 'eligible':
                 status.update(loop_state='waiting_for_position_slot')
                 print(f"  Not eligible to open the next signal yet ({eligibility}) - "
@@ -745,7 +758,8 @@ def run_web_loop_multi(driver):
             opened_any = False
             for portfolio in targets:
                 portfolio_eligibility = check_eligibility(
-                    company, portfolio, params['direction'], engaged_company, open_positions
+                    company, portfolio, params['direction'], engaged_company, open_positions,
+                    max_positions_per_company=max_positions_per_company,
                 )
                 if portfolio_eligibility == 'eligible':
                     portfolio_params = dict(params, portfolio=portfolio)
