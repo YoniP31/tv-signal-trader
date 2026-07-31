@@ -101,6 +101,8 @@ If the broker rejects an order outright (e.g. the position size requested is too
 
 Once per calendar day (at startup if already inside the trading session, or right when a new day's session opens), the bot checks each configured company: it connects to that company's Tradovate login, lists every actual sub-account there, and compares that against the portfolios shown in TradingGenerator. Any TradingGenerator portfolio whose account isn't in the Tradovate list anymore has been liquidated, so it gets removed from TradingGenerator automatically.
 
+If the Tradovate account list itself can't be read (a transient DOM/timing glitch — e.g. the account-selector dropdown didn't open in time), that company's sweep is skipped entirely rather than treated as "zero accounts found": an unreadable list is not the same as a confirmed-empty one, and treating it that way would remove every portfolio for that company as if all of them had been liquidated. It's simply retried on the next sweep instead.
+
 **How to test:** hard to fully test without an actually-liquidated account. At minimum, confirm the sweep runs cleanly on startup (look for `[SWEEP] Checking for liquidated accounts...` and `[SWEEP] Done.` in the console) without errors, for every company you have a Tradovate account configured for.
 
 ## Crash recovery (startup reconciliation)

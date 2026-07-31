@@ -64,6 +64,17 @@ def sweep_liquidated_accounts(driver, web_tab, tv_tab, connected_company):
         tradovate_accounts = trading.list_tradovate_accounts(driver)
         driver.switch_to.window(web_tab)
 
+        if tradovate_accounts is None:
+            # Couldn't actually read the account list (transient DOM/timing
+            # failure) -- must not be treated as "confirmed zero accounts",
+            # since that would remove every portfolio for this company as
+            # if all of them had been liquidated. Skip this company's sweep
+            # entirely rather than guess; it'll just be tried again on the
+            # next sweep (tomorrow, or next startup).
+            print(f"  [WARN] Could not read '{company}' Tradovate account list - "
+                  "skipping its sweep rather than risk removing portfolios that are still fine.")
+            continue
+
         for portfolio in tg_portfolios:
             if portfolio not in tradovate_accounts:
                 print(f"  [WARN] '{company} / {portfolio}' not found in its Tradovate account "

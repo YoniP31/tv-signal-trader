@@ -298,16 +298,26 @@ def select_tradovate_account(driver, account_name, timeout=10):
 def list_tradovate_accounts(driver):
     """Names of every Tradovate sub-account under the currently connected
     login, read from the broker panel's account-selector dropdown -- opens
-    it to read the list, then closes it again."""
+    it to read the list, then closes it again.
+
+    Returns None (not []) if the list couldn't actually be read for any
+    reason -- a caller that treats an empty list as "confirmed zero
+    accounts" (e.g. sweep_liquidated_accounts, which removes any
+    TradingGenerator portfolio not found in this list) must be able to
+    tell that apart from "the read itself failed", since conflating the
+    two would treat a transient DOM/timing glitch as grounds to remove
+    every single portfolio. Only a *successful* read returns a real list,
+    which may legitimately be empty.
+    """
     if not _ensure_broker_panel_open(driver):
         print("  FAILED: could not open the broker panel to list accounts.")
-        return []
+        return None
 
     try:
         selector_btn = driver.find_element(By.CSS_SELECTOR, '[data-qa-id="account-selector"]')
     except Exception:
         print("  FAILED: account-selector button not found.")
-        return []
+        return None
 
     driver.execute_script("arguments[0].click();", selector_btn)
     humanize.long_pause(0.6, 1.0)
@@ -316,7 +326,7 @@ def list_tradovate_accounts(driver):
         dropdown = driver.find_element(By.CSS_SELECTOR, '[data-qa-id="account-dropdown"]')
     except Exception:
         print("  FAILED: account-dropdown list did not open.")
-        return []
+        return None
 
     names = [
         name_el.text.strip()
