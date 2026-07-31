@@ -27,15 +27,25 @@ class LoginMonitor:
     with a command in progress.
 
     Also doubles as the app's "did the user close the browser?" check: if
-    every Chrome window is gone, chromedriver's session is gone with it, so
-    this hard-exits the whole process rather than leaving the CLI sitting
-    uselessly at the '>' prompt forever. A plain sys.exit() wouldn't reach
-    past that blocked input() call on the main thread -- it'd just end this
-    background thread -- so os._exit() is used deliberately here.
+    the TradingView window/tab is gone, this closes the browser (any other
+    window, e.g. TradingGenerator's hidden one -- see tradinggenerator.
+    open_tab -- would otherwise be orphaned, since the user can't close a
+    hidden window themselves) and hard-exits the whole process rather than
+    leaving the CLI sitting uselessly at the '>' prompt forever. A plain
+    sys.exit() wouldn't reach past that blocked input() call on the main
+    thread -- it'd just end this background thread -- so os._exit() is used
+    deliberately here; that's also *why* browser.force_kill() (not
+    driver.quit()) is called explicitly right before it, rather than
+    relying on cli.py's own try/finally -- os._exit() skips all normal
+    Python cleanup, finally blocks included, and driver.quit() itself can
+    hang on an already-half-closed session for long enough that an
+    impatient second Ctrl+C aborts it before the browser's actually told
+    to close.
     """
 
-    def __init__(self, driver, interval_range=config.HEARTBEAT_POLL_RANGE):
+    def __init__(self, driver, tv_tab, interval_range=config.HEARTBEAT_POLL_RANGE):
         self.driver = driver
+        self.tv_tab = tv_tab
         self.interval_range = interval_range
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -56,9 +66,16 @@ class LoginMonitor:
 
     def _poll_once(self):
         with state.session.driver_lock:
-            if not browser.is_alive(self.driver):
-                print("\n[FAIL] Browser window closed - exiting.")
-                status.mark_app_stopped()
+            if not browser.is_alive(self.driver, self.tv_tab):
+                print("\n[FAIL] TradingView window closed - closing the browser and exiting.")
+                # force_kill first, before anything that could possibly
+                # raise (status write racing this thread's own next write)
+                # -- see cli.py's _handle_sigint for the same reasoning.
+                browser.force_kill(self.driver)
+                try:
+                    status.mark_app_stopped()
+                except Exception:
+                    pass
                 os._exit(0)
 
             tv_logged_in = status.check_tradingview_logged_in(self.driver)

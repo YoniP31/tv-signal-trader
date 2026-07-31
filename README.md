@@ -9,9 +9,10 @@ The implementation lives in the [tv_signal_trader/](tv_signal_trader/) package, 
 | File | Responsibility |
 |------|----------------|
 | [main.py](main.py) | Entry point — `python main.py` |
+| [stop.py](stop.py) | Standalone script (not part of the package) — a guaranteed, independent way to stop everything if Ctrl+C ever doesn't; see "How to run it" below |
 | [tv_signal_trader/config.py](tv_signal_trader/config.py) | Paths, URLs, `.env`-backed settings, and other constants |
 | [tv_signal_trader/setup_wizard.py](tv_signal_trader/setup_wizard.py) | First-run/`setup` command: prompts for and persists TradingGenerator credentials and (multiple, one per prop firm) Tradovate accounts |
-| [tv_signal_trader/browser.py](tv_signal_trader/browser.py) | Chrome setup, stealth tweaks, and download preferences |
+| [tv_signal_trader/browser.py](tv_signal_trader/browser.py) | Chrome setup, stealth tweaks, download preferences, and process lifecycle (`is_alive`, `force_kill`, `hide_window_by_title`) |
 | [tv_signal_trader/humanize.py](tv_signal_trader/humanize.py) | Randomized pauses and human-like typing |
 | [tv_signal_trader/panel.py](tv_signal_trader/panel.py) | Low-level DOM helpers for reading/filling the order-ticket panel |
 | [tv_signal_trader/trading.py](tv_signal_trader/trading.py) | All TradingView-side actions: connecting/switching Tradovate accounts and sub-accounts, `place_order()`, chart switching, waiting for a trade to close, reading account balance |
@@ -40,7 +41,7 @@ A handful of settings live in `.env` but aren't part of this wizard — edit `.e
 
 - **Account balance limits** (`ACCOUNT_25K_MIN_BALANCE`/`ACCOUNT_50K_MIN_BALANCE`, `ACCOUNT_25K_MAX_BALANCE_EVAL`/`_LIVE`/`ACCOUNT_50K_MAX_BALANCE_EVAL`/`_LIVE`) — see step 5 below.
 - **Trading session window** (`SESSION_START_TIME`/`SESSION_END_TIME`, `HH:MM` 24-hour, Israel time) — see step 6 below. Leave unset to allow trading at any time.
-- **No-trade window** (`NO_TRADE_START_TIME`/`NO_TRADE_END_TIME`) and **take-profit cap buffer** (`TP_CAP_BUFFER_MIN`/`TP_CAP_BUFFER_MAX`) — used by `web_multi`, see [docs/WEB_MULTI.md](docs/WEB_MULTI.md).
+- **No-trade window** (`NO_TRADE_START_TIME`/`NO_TRADE_END_TIME`), **take-profit cap buffer** (`TP_CAP_BUFFER_MIN`/`TP_CAP_BUFFER_MAX`), **daily profit/loss limits** (`DAILY_PROFIT_LIMIT`/`DAILY_LOSS_LIMIT`) and their cap buffer (`DAILY_PNL_CAP_BUFFER_MIN`/`DAILY_PNL_CAP_BUFFER_MAX`), and **max positions per company** (`MAX_POSITIONS_PER_COMPANY`) — all used by `web_multi`, see [docs/WEB_MULTI.md](docs/WEB_MULTI.md).
 
 ### 3. Order placement — `place_order(driver, tp_ticks, sl_ticks, side, units)`
 
@@ -96,7 +97,7 @@ A `status.json` file (next to `.env`) works as a monitoring/CRM-style record of 
 Refreshed on startup/shutdown, whenever `web` touches something worth recording, and by a background `LoginMonitor` thread that runs on a randomized cadence (`config.HEARTBEAT_POLL_RANGE`, see "Randomized timing" below) and does double duty:
 
 - Re-checks TradingView's login cookie (via the `Network.getAllCookies` CDP command, so it doesn't need to switch tabs and visibly hijack the browser). TradingGenerator's login status can only be determined by reading its tab's DOM, which *would* require disruptively switching to it, so that one's only updated on-demand whenever `web` actually uses it.
-- Checks whether the browser is still alive (`browser.is_alive`, a `driver.window_handles` call wrapped in try/except). If every Chrome window has been closed, chromedriver's session is gone too, so this marks `status.json` stopped and hard-exits the whole process (`os._exit(0)` — a plain `sys.exit()` from this background thread wouldn't reach past the main thread's blocked `input()` call at the `>` prompt) instead of leaving the CLI sitting uselessly forever.
+- Checks whether the TradingView window specifically is still open (`browser.is_alive(driver, tv_tab)`) — not "any window at all", since TradingGenerator now runs as a permanently-open hidden window (see step 1 above) that the user can't close by hand, so "any window" could never go false just because they closed the one they can actually see. If the TradingView window is gone, this marks `status.json` stopped, force-kills the browser (`browser.force_kill` — see "If you need to stop it" below), and hard-exits the whole process (`os._exit(0)` — a plain `sys.exit()` from this background thread wouldn't reach past the main thread's blocked `input()` call at the `>` prompt) instead of leaving the CLI sitting uselessly forever.
 
 ### 8. Randomized timing
 
@@ -141,6 +142,20 @@ A second automatic trading command, in [tv_signal_trader/multi_signal_source.py]
 4. On first run you'll be walked through setup in the terminal for anything missing: your TradingGenerator username/password, then at least one Tradovate account (pick a prop firm from a fixed list, enter its username/password — one account per firm). This gets saved to a local `.env` file so you're only asked once — type `setup` at the `>` prompt anytime to add more accounts or change existing values. (No chromedriver download needed — Selenium Manager fetches it automatically the first time Chrome launches.)
 5. Chrome then opens to the chart — log into TradingView (and make sure the intended Tradovate/broker connection is active) in that window. The session persists in the `tv_profile` folder for future runs; TradingView itself isn't part of the `.env`/setup flow since it relies on that persistent cookie-based session, not password auto-fill.
 6. Type a command at the `>` prompt (see table above).
+
+### Stopping it — Ctrl+C, and the `stop.py` backstop
+
+Ctrl+C reliably closes everything, including TradingGenerator's hidden window (which can't be closed by hand — see step 1 under "The automatic trading loop" above): `cli.py` installs a `signal.signal(signal.SIGINT, ...)` handler that force-kills the whole browser and hard-exits immediately, rather than the Python default of raising `KeyboardInterrupt` wherever the program happens to be and hoping that unwinds cleanly through however many nested calls sit between there and cleanup. It works the same whether you're sitting at the `>` prompt or deep inside a running `web`/`web_multi` loop.
+
+Force-killing (`browser.force_kill`) works by finding every process — any name — whose command line references this bot's `tv_profile` browser profile directory, and killing them directly via the OS, rather than asking nicely via `driver.quit()` (which talks to the browser over a session that can already be broken, and can hang instead of failing fast).
+
+For the rare, more pathological case — Python itself is completely wedged and can't run *any* code, not even a signal handler — there's a backstop that doesn't depend on the main program being responsive at all. Run this from a *separate* terminal window:
+
+```bash
+python stop.py
+```
+
+It uses the same profile-directory process lookup as `force_kill`, plus stops the bot's own `main.py`/`tv-signal-trader.exe` process, purely via the OS — independent of whatever state the main program is in.
 
 ## Building a standalone .exe
 

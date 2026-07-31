@@ -1,4 +1,5 @@
 import ctypes
+import subprocess
 import sys
 import time
 
@@ -6,6 +7,7 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 
 from . import config
+from .logging_utils import timestamped_print as print
 
 
 def build_options():
@@ -48,14 +50,60 @@ def create_driver():
     return driver
 
 
-def is_alive(driver):
-    """False once the browser itself is gone (e.g. the user closed every
-    window) -- at that point chromedriver's underlying session is dead too,
-    so any call to the driver raises rather than returning an empty list."""
+def is_alive(driver, tab_handle=None):
+    """False once the browser's gone. If `tab_handle` is given, checks
+    specifically whether *that* window/tab is still open, rather than
+    "any window at all" -- necessary now that TradingGenerator runs as a
+    permanently-open hidden window (see tradinggenerator.open_tab):
+    without a specific handle to check, this could never go False just
+    because the user closed the one window they can actually see
+    (TradingView), since the hidden one is still there. If the whole
+    session is dead, any call to the driver raises rather than returning
+    an empty list, so that's treated as "not alive" too either way."""
     try:
+        if tab_handle is not None:
+            return tab_handle in driver.window_handles
         return bool(driver.window_handles)
     except Exception:
         return False
+
+
+def force_kill(driver=None):
+    """Immediately kills every Chrome/chromedriver process tied to this
+    bot's browser profile (all windows, hidden or not) via the OS, rather
+    than driver.quit()'s own WebDriver/CDP-based shutdown.
+
+    Deliberately does NOT target chromedriver's own PID as the root of a
+    process-tree kill (an earlier version did, and it was observed to
+    fail): chromedriver shares this Python process's console by default,
+    so a Ctrl+C is broadcast to it directly too, and it can exit on its
+    own before this even runs -- at which point a PID-targeted kill finds
+    nothing ("process not found") and leaves chrome.exe, now parentless,
+    running untouched. Instead this finds every process (any name) whose
+    command line references the profile directory -- same technique as
+    stop.py, which doesn't depend on any single process still being alive
+    -- so it doesn't matter which one already died or is still running.
+
+    `driver` is accepted but unused (kept so existing call sites don't need
+    to change); the profile directory alone is enough to find everything.
+
+    Safe to call even if every process is already gone. Reports its own
+    outcome (rather than swallowing failures silently) so a failure to
+    actually close the browser is visible instead of a silent no-op.
+    """
+    script = (
+        "Get-CimInstance Win32_Process | "
+        f"Where-Object {{ $_.CommandLine -like '*{config.PROFILE_DIR}*' }} | "
+        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+    )
+    try:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command", script],
+            capture_output=True, timeout=15,
+        )
+        print(f"  Force-killed every Chrome process under {config.PROFILE_DIR} [OK]")
+    except Exception as e:
+        print(f"  [WARN] force_kill: sweeping/killing profile processes failed: {e}")
 
 
 def hide_window_by_title(title_substring, timeout=10):
