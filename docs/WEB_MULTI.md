@@ -2,7 +2,7 @@
 
 `web` and `web_multi` are the same engine, [tv_signal_trader/multi_signal_source.py](../tv_signal_trader/multi_signal_source.py) — not two separate implementations. The only difference is `MAX_POSITIONS_PER_COMPANY`: `web` forces it to 1, so combined with rule 3 below ("only one company engaged at a time") it trades one signal at a time, same as it always has. `web_multi` uses whatever's configured in `.env` (default 3), allowing several concurrent positions per company. Everything else on this page — quarantining, daily limits, crash recovery, the sweep, all of it — applies identically to both commands.
 
-Type `web` or `web_multi` at the `>` prompt to run one.
+Type `web` or `web_multi` at the `>` prompt to run one. Either command first asks whether to show TradingGenerator's window just for this run (Enter keeps `config.HIDE_TRADINGGENERATOR_WINDOW`'s current default) — see the main [README](../README.md#4-the-automatic-trading-loop--run_web_loop_multidriver-).
 
 ## The concurrency rules
 

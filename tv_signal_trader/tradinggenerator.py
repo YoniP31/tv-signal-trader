@@ -89,15 +89,17 @@ def ensure_logged_in(driver):
     return True
 
 
-def open_tab(driver, other_tab):
+def open_tab(driver, other_tab, hide_window=None):
     """Finds an already-open TradingGenerator window, or opens a new one.
 
     `other_tab` (e.g. the TradingView tab) is skipped when searching, so the
     loop doesn't mistake it for TradingGenerator. Leaves the driver switched
     to the TradingGenerator window.
 
-    config.HIDE_TRADINGGENERATOR_WINDOW controls which of two ways it's
-    opened:
+    `hide_window` (None = use config.HIDE_TRADINGGENERATOR_WINDOW) controls
+    which of two ways it's opened -- only takes effect when a new window is
+    actually created here; if one's already open (found above), it keeps
+    whatever visibility it was originally created with:
       - True (default): with explicit window features (not a plain
         `window.open(url, '_blank')`, which Chrome treats as a new tab of
         the same window), so it becomes its own separate OS-level window,
@@ -109,6 +111,9 @@ def open_tab(driver, other_tab):
         -- useful for debugging, e.g. to actually watch what
         TradingGenerator is doing.
     """
+    if hide_window is None:
+        hide_window = config.HIDE_TRADINGGENERATOR_WINDOW
+
     site_host = config.SIGNAL_SITE_URL.split('//')[-1].split('/')[0]
     for handle in driver.window_handles:
         if handle == other_tab:
@@ -118,7 +123,7 @@ def open_tab(driver, other_tab):
             return handle
 
     driver.switch_to.window(other_tab)
-    if config.HIDE_TRADINGGENERATOR_WINDOW:
+    if hide_window:
         driver.execute_script(
             f"window.open('{config.SIGNAL_SITE_URL}', '_blank', 'width=1280,height=800');"
         )
@@ -129,7 +134,7 @@ def open_tab(driver, other_tab):
     driver.switch_to.window(web_tab)
     humanize.long_pause(2, 3)
 
-    if config.HIDE_TRADINGGENERATOR_WINDOW:
+    if hide_window:
         if browser.hide_window_by_title("Trading Generator"):
             print("  TradingGenerator window hidden from the taskbar/Alt-Tab [OK]")
         else:

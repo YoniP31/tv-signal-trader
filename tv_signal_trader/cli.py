@@ -54,6 +54,21 @@ def main():
 
     signal.signal(signal.SIGINT, _handle_sigint)
 
+    def _ask_hide_tg_window():
+        # Lets the user override config.HIDE_TRADINGGENERATOR_WINDOW for
+        # just this run, without editing config.py. Only takes effect if
+        # TradingGenerator's window/tab isn't already open from earlier in
+        # this same browser session (see tg.open_tab) -- asking again in
+        # that case is harmless, just a no-op.
+        default_hidden = config.HIDE_TRADINGGENERATOR_WINDOW
+        choice = input(
+            f"  Show TradingGenerator window this run? (y/n) [default: "
+            f"{'n (hidden)' if default_hidden else 'y (visible)'}]: "
+        ).strip().lower()
+        if choice == "":
+            return None
+        return choice not in ("y", "yes")
+
     try:
         print("Opening chart...")
         driver.get(config.CHART_URL)
@@ -78,9 +93,13 @@ def main():
                     # with the engine's existing "only one company engaged at
                     # a time" rule, that reproduces single-position-at-a-time
                     # behavior without a separate implementation to maintain.
-                    multi_signal_source.run_web_loop_multi(driver, max_positions_per_company=1, command_name="web")
+                    hide_tg_window = _ask_hide_tg_window()
+                    multi_signal_source.run_web_loop_multi(
+                        driver, max_positions_per_company=1, command_name="web", hide_tg_window=hide_tg_window
+                    )
                 elif cmd == "web_multi":
-                    multi_signal_source.run_web_loop_multi(driver)
+                    hide_tg_window = _ask_hide_tg_window()
+                    multi_signal_source.run_web_loop_multi(driver, hide_tg_window=hide_tg_window)
                 elif cmd == "buy":
                     trading.place_order(driver, tp_ticks=150, sl_ticks=150, side="buy")
                 elif cmd == "sell":

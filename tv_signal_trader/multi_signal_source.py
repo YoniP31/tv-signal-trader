@@ -500,7 +500,7 @@ def _reconcile_open_positions_at_startup(driver, web_tab, tv_tab):
     return open_positions, connected_company
 
 
-def run_web_loop_multi(driver, max_positions_per_company=None, command_name="web_multi"):
+def run_web_loop_multi(driver, max_positions_per_company=None, command_name="web_multi", hide_tg_window=None):
     """The trading loop behind both the 'web' and 'web_multi' commands --
     supports several concurrent open positions under the rules described at
     the top of this module. 'web' is this same engine with
@@ -528,6 +528,11 @@ def run_web_loop_multi(driver, max_positions_per_company=None, command_name="web
     but never reported) by a previous run -- e.g. a crash. Recovered open
     positions seed `open_positions` directly; no new trade is generated
     until they've all drained (same wait as any other open position).
+
+    `hide_tg_window` overrides config.HIDE_TRADINGGENERATOR_WINDOW for this
+    run only (None = use the config default) -- see tg.open_tab. Only has
+    an effect if TradingGenerator's window/tab isn't already open from
+    earlier in this same browser session.
     """
     print(f"\n[{command_name.upper()}] Starting automatic trading loop (Ctrl+C to stop)...")
     tv_tab = driver.current_window_handle
@@ -541,7 +546,7 @@ def run_web_loop_multi(driver, max_positions_per_company=None, command_name="web
     last_sweep_date = None
     status.update(loop_state='trading', loop_started_at=status.timestamp(), stop_reason=None)
     try:
-        web_tab = tg.open_tab(driver, tv_tab)
+        web_tab = tg.open_tab(driver, tv_tab, hide_window=hide_tg_window)
         print("  TradingGenerator tab ready [OK]")
 
         print("  Checking for positions left open or unreported by a previous run...")
