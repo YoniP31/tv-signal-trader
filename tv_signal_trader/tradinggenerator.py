@@ -557,6 +557,53 @@ def has_pending_trade_result(driver):
     return 'visible' in (section.get_attribute('class') or '').split()
 
 
+def _open_trade_card_for(driver, company, portfolio):
+    """Finds this company/portfolio's card in TradingGenerator's "OPEN
+    TRADES" grid (.open-trade-card), if any. Unlike the Trade Result prompt
+    above (which only ever applies to whichever portfolio is currently
+    selected), this grid lists every portfolio TradingGenerator currently
+    considers to have an open trade, regardless of selection -- returns the
+    matching card element, or None if this portfolio isn't listed there."""
+    for card in driver.find_elements(By.CSS_SELECTOR, ".open-trade-card"):
+        try:
+            card_company = card.find_element(By.CSS_SELECTOR, ".meta-company").text.strip()
+            card_portfolio = card.find_element(By.CSS_SELECTOR, ".meta-portfolio").text.strip()
+        except Exception:
+            continue
+        if card_company == company and card_portfolio == portfolio:
+            return card
+    return None
+
+
+def has_open_trade_card(driver, company, portfolio):
+    """Whether TradingGenerator's "OPEN TRADES" grid still lists a trade for
+    this company/portfolio. Can be True even when has_pending_trade_result
+    is False -- seen after a new trading day resets the Trade Result
+    prompt, or a TradingGenerator-side bug -- in which case there's no
+    Trade Result button to report through, and close_open_trade_card below
+    is the only way to clear the stale entry."""
+    return _open_trade_card_for(driver, company, portfolio) is not None
+
+
+def close_open_trade_card(driver, company, portfolio):
+    """Clicks the '(X) Close Trade' button on this company/portfolio's card
+    in TradingGenerator's "OPEN TRADES" grid -- the fallback way to clear a
+    stale open-trade entry when the normal Trade Result prompt isn't
+    available to report through (see has_open_trade_card). Returns True if
+    a matching card was found and clicked."""
+    card = _open_trade_card_for(driver, company, portfolio)
+    if card is None:
+        return False
+    try:
+        card.find_element(By.CSS_SELECTOR, ".otl-close").click()
+    except Exception:
+        print(f"  [WARN] Found '{company} / {portfolio}' in TradingGenerator's Open Trades grid "
+              "but couldn't click its Close Trade button.")
+        return False
+    print(f"  Closed stale 'Open Trades' entry for '{company} / {portfolio}' in TradingGenerator [OK]")
+    return True
+
+
 def save_backup(driver):
     """Clicks TradingGenerator's "Save Backup" button (.backup-btn-save),
     which downloads a .json backup of its current state -- run once the

@@ -381,7 +381,11 @@ def _reconcile_open_positions_at_startup(driver, web_tab, tv_tab):
     without reporting it, and either rehydrates it into a fresh
     open_positions ledger or reports its already-known result -- so a
     crash never permanently loses track of a live position or leaves
-    TradingGenerator's Trade Result prompt stuck.
+    TradingGenerator's Trade Result prompt stuck. Also clears any
+    portfolio TradingGenerator's "OPEN TRADES" grid still lists as open
+    despite having no Trade Result prompt to report through (a new day's
+    reset, or a TradingGenerator-side bug) by clicking its own Close Trade
+    button instead -- see tg.has_open_trade_card/close_open_trade_card.
 
     Source of truth is live DOM state (Tradovate's Orders table,
     TradingGenerator's still-displayed trade parameters/Trade Result
@@ -456,41 +460,57 @@ def _reconcile_open_positions_at_startup(driver, web_tab, tv_tab):
             print(f"  [WARN] '{company} / {portfolio}' couldn't be safely selected in "
                   "TradingGenerator to check for a pending Trade Result - skipping.")
             continue
-        if not tg.has_pending_trade_result(driver):
+
+        pending_result = tg.has_pending_trade_result(driver)
+        # Even with no pending Trade Result prompt, TradingGenerator's own
+        # "OPEN TRADES" grid can still list this portfolio as open -- seen
+        # after a new trading day resets the prompt, or a TradingGenerator-
+        # side bug. There's no Trade Result button to report through in
+        # that case, so it has to be cleared via its own Close Trade button
+        # instead (stale_open_card below), regardless of whether the
+        # position is actually still open or already closed in TradingView.
+        stale_open_card = not pending_result and tg.has_open_trade_card(driver, company, portfolio)
+        if not pending_result and not stale_open_card:
             continue
 
-        # No working bracket, but TradingGenerator still shows a pending
-        # Trade Result prompt -- the position closed while we were down and
-        # was never reported.
+        # Either TradingGenerator still shows a pending Trade Result prompt,
+        # or it has no prompt but still lists this portfolio as open -- the
+        # position closed (or was manually resolved) while we were down and
+        # TradingGenerator's own bookkeeping was never cleared for it.
         driver.switch_to.window(tv_tab)
         bracket = trading.find_last_bracket(driver)
         tp_id, sl_id = bracket.get('tp'), bracket.get('sl')
         if not tp_id or not sl_id:
-            print(f"  [WARN] '{company} / {portfolio}' has an unreported Trade Result prompt but its "
+            print(f"  [WARN] '{company} / {portfolio}' has an unreported/stale open trade but its "
                   "last bracket order couldn't be found - leaving it for manual review.")
             continue
         outcome = trading.check_bracket_status(driver, tp_id, sl_id)
 
         driver.switch_to.window(web_tab)
         if not _select_and_verify(driver, company, portfolio):
-            print(f"  [WARN] '{company} / {portfolio}' has an unreported Trade Result prompt but "
-                  "couldn't be safely re-selected to report it - leaving it for manual review.")
+            print(f"  [WARN] '{company} / {portfolio}' has an unreported/stale open trade but "
+                  "couldn't be safely re-selected to clear it - leaving it for manual review.")
             continue
 
         if outcome == 'manual_close':
             print(f"  [WARN] '{company} / {portfolio}' closed manually or was liquidated while the "
                   "bot was down - no correct result to report. Quarantining until the next session.")
             status.mark_portfolio_unavailable(company, portfolio, 'manual_close_or_liquidation')
+            if stale_open_card:
+                tg.close_open_trade_card(driver, company, portfolio)
             continue
         if outcome not in ('tp', 'sl'):
-            print(f"  [WARN] '{company} / {portfolio}' has an unreported Trade Result prompt but its "
+            print(f"  [WARN] '{company} / {portfolio}' has an unreported/stale open trade but its "
                   f"last bracket status ('{outcome}') couldn't be resolved - leaving it for manual review.")
             continue
 
         params = tg.read_trade_parameters(driver)
         print(f"  [RECOVER] '{company} / {portfolio}' closed ({outcome}) while the bot was down and "
               "was never reported - reporting now.")
-        tg.report_trade_result(driver, outcome)
+        if pending_result:
+            tg.report_trade_result(driver, outcome)
+        else:
+            tg.close_open_trade_card(driver, company, portfolio)
         status.record_trade_result(
             company, portfolio,
             asset=params['asset'], direction=params['direction'], contracts=params['contracts'],
