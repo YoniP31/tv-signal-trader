@@ -87,9 +87,9 @@ Leave both blank to disable it.
 
 ## Manual close / liquidation
 
-If a position's Take Profit *and* Stop Loss both end up cancelled and *neither* filled, something closed it outside of the bot's own control — you closed it by hand, or the account was liquidated. There's no correct result to report for that, so the bot doesn't report anything; it just quarantines that portfolio (won't trade it again) until the next trading session starts.
+If a position's Take Profit *and* Stop Loss both end up cancelled and *neither* filled, something closed it outside of the bot's own control — you closed it by hand, or the account was liquidated. There's no win/loss to score for that, so the bot reports it as **Trade Not Taken** (clearing TradingGenerator's own bookkeeping rather than leaving it stuck) and quarantines that portfolio (won't trade it again) until the next trading session starts.
 
-**How to test:** with a position open via `web_multi`, manually close it from the Tradovate panel in TradingView. Confirm the bot detects this, logs a warning, and doesn't try opening a new trade on that same portfolio again until you restart the session (or the next day's session begins).
+**How to test:** with a position open via `web_multi`, manually close it from the Tradovate panel in TradingView. Confirm the bot detects this, logs a warning, reports Trade Not Taken, and doesn't try opening a new trade on that same portfolio again until you restart the session (or the next day's session begins).
 
 ## Rejected orders
 
@@ -111,8 +111,9 @@ Every time `web_multi` starts, before it generates any new trade, it checks ever
 
 - **Still open** (a working Take Profit/Stop Loss bracket): recovered straight into the ledger, same as if the bot had just opened it itself. Its trade parameters (asset/direction/contracts/SL/TP) are read back from TradingGenerator, which keeps showing them until a result is reported.
 - **Already closed, but TradingGenerator's Trade Result prompt is still waiting**: the bot works out whether it hit TP or SL from the Orders table and reports it now, exactly as if it had just happened.
-- **Already closed (or still open), but TradingGenerator has no Trade Result prompt to report through** — seen after a new trading day resets the prompt, or a TradingGenerator-side bug — **while its "OPEN TRADES" grid still lists the portfolio**: there's no result button to click in this case, so instead the bot works out the outcome from the Orders table the same way as above, then clears TradingGenerator's stale entry via that portfolio's own "✕ Close Trade" button in the Open Trades grid.
-- **Closed manually/liquidated while the bot was down** (neither TP nor SL filled): same as a live manual close — no result is reported (any stale Open Trades entry is still cleared via Close Trade), that portfolio is quarantined until the next session.
+- **No bracket order history at all** for that portfolio (nothing to determine a TP/SL outcome from): reported as **Trade Not Taken** rather than left stuck.
+- **Closed manually/liquidated while the bot was down** (neither TP nor SL filled): reported as **Trade Not Taken** (there's no win/loss to score) and quarantined until the next session, same as a live manual close.
+- **No Trade Result prompt to report through at all** — seen after a new trading day resets the prompt, or a TradingGenerator-side bug — **but the portfolio still shows in TradingGenerator's "OPEN TRADES" grid**: the outcome above is still worked out the same way, but since there's no result button to click, `report_trade_result` automatically falls back to that portfolio's own "✕ Close Trade" button in the Open Trades grid instead — this same fallback also kicks in any time the normal result button just can't be found for any reason, not only during startup recovery.
 
 While any recovered position remains open, the bot won't generate any new trade — it just keeps monitoring/reporting (the same as any other open position) until the ledger is fully drained, then resumes normally.
 

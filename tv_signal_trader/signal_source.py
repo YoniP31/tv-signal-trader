@@ -14,7 +14,7 @@ MAX_CONSECUTIVE_FAILURES = 5
 def report_not_taken(driver, params):
     """Reports Trade Not Taken and, if we know which portfolio this was
     for, records it in status.json too."""
-    tg.report_trade_result(driver, 'not_taken')
+    tg.report_trade_result(driver, 'not_taken', company=params['company'], portfolio=params['portfolio'])
     if params['company'] and params['portfolio']:
         status.record_trade_result(
             params['company'], params['portfolio'],

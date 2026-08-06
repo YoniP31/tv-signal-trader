@@ -10,7 +10,157 @@ from . import setup_wizard
 from . import state
 from . import status
 from . import trading
+from . import tradinggenerator as tg
 from .logging_utils import timestamped_print as print
+
+
+def _run_test_menu(driver, tv_tab, hide_tg_window=None):
+    """The 'test' command's submenu -- ad hoc, one-off manual verification
+    of individual pieces (placing an order, reporting a Trade Result,
+    closing a stale Open Trades card, ...) against whatever's actually on
+    the page right now, without running the full web/web_multi loop.
+
+    Each test command prints setup instructions and waits for Enter before
+    running, since the point is to give you time to actually go set up the
+    scenario (select the right portfolio, open the right panel, ...) in the
+    browser first.
+
+    `hide_tg_window` (None = use config.HIDE_TRADINGGENERATOR_WINDOW) is
+    asked once by the caller before entering this menu, same as for
+    web/web_multi -- applies to every TG-related test command below that
+    opens/reuses TradingGenerator's tab.
+    """
+
+    def _tg_tab():
+        web_tab = tg.open_tab(driver, tv_tab, hide_window=hide_tg_window)
+        driver.switch_to.window(web_tab)
+        return web_tab
+
+    def _active_company_portfolio():
+        company, portfolio = tg.read_active_company_portfolio(driver)
+        if not company or not portfolio:
+            print("  [FAIL] Could not read the currently-selected company/portfolio in TradingGenerator.")
+        return company, portfolio
+
+    def _test_buy():
+        driver.switch_to.window(tv_tab)
+        trading.place_order(driver, tp_ticks=150, sl_ticks=150, side="buy")
+
+    def _test_sell():
+        driver.switch_to.window(tv_tab)
+        trading.place_order(driver, tp_ticks=150, sl_ticks=150, side="sell")
+
+    def _test_connect_tradovate():
+        driver.switch_to.window(tv_tab)
+        # Uses the sole configured account -- see signal_source._pick_tradovate_account.
+        if len(config.TRADOVATE_ACCOUNTS) == 1:
+            account = next(iter(config.TRADOVATE_ACCOUNTS.values()))
+            trading.connect_tradovate(driver, account['username'], account['password'])
+        else:
+            print(f"  [FAIL] {len(config.TRADOVATE_ACCOUNTS)} accounts configured, "
+                  "need exactly 1 for this test command.")
+
+    def _test_disconnect_tradovate():
+        driver.switch_to.window(tv_tab)
+        trading.disconnect_tradovate(driver)
+
+    def _test_report(outcome):
+        _tg_tab()
+        company, portfolio = _active_company_portfolio()
+        if company and portfolio:
+            tg.report_trade_result(driver, outcome, company=company, portfolio=portfolio)
+
+    def _test_close_open_trade():
+        _tg_tab()
+        default_company, default_portfolio = tg.read_active_company_portfolio(driver)
+        company = input(f"  Company [default: {default_company or '(none selected)'}]: ").strip() or default_company
+        portfolio = (
+            input(f"  Portfolio [default: {default_portfolio or '(none selected)'}]: ").strip()
+            or default_portfolio
+        )
+        if not company or not portfolio:
+            print("  [FAIL] No company/portfolio to close (nothing selected and none entered).")
+            return
+        if tg.close_open_trade_card(driver, company, portfolio):
+            print(f"  [OK] Closed '{company} / {portfolio}' via the Open Trades grid.")
+        else:
+            print(f"  [FAIL] '{company} / {portfolio}' isn't listed in the Open Trades grid.")
+
+    def _test_tg_status():
+        _tg_tab()
+        company, portfolio = tg.read_active_company_portfolio(driver)
+        print(f"  Selected: '{company} / {portfolio}'")
+        print(f"  Pending Trade Result prompt: {tg.has_pending_trade_result(driver)}")
+        if company and portfolio:
+            print(f"  Listed in Open Trades grid: {tg.has_open_trade_card(driver, company, portfolio)}")
+
+    test_commands = {
+        "buy": (
+            "Places a manual buy with 150-tick TP/SL on whatever symbol is currently loaded "
+            "in the TradingView tab. Connect a Tradovate account first (see connect_tradovate).",
+            _test_buy,
+        ),
+        "sell": (
+            "Places a manual sell with 150-tick TP/SL on whatever symbol is currently loaded "
+            "in the TradingView tab. Connect a Tradovate account first (see connect_tradovate).",
+            _test_sell,
+        ),
+        "connect_tradovate": (
+            "Connects the sole configured Tradovate account. Only works with exactly one "
+            "account configured in .env.",
+            _test_connect_tradovate,
+        ),
+        "disconnect_tradovate": (
+            "Disconnects whichever Tradovate account is currently connected.",
+            _test_disconnect_tradovate,
+        ),
+        "report_tp": (
+            "Clicks the 'Take Profit' Trade Result button. In TradingGenerator, select the "
+            "company/portfolio you want to test first, with its Trade Result prompt visible.",
+            lambda: _test_report('tp'),
+        ),
+        "report_sl": (
+            "Clicks the 'Stop Loss' Trade Result button. In TradingGenerator, select the "
+            "company/portfolio you want to test first, with its Trade Result prompt visible.",
+            lambda: _test_report('sl'),
+        ),
+        "report_not_taken": (
+            "Clicks the 'Trade Not Taken' Trade Result button. In TradingGenerator, select the "
+            "company/portfolio you want to test first, with its Trade Result prompt visible.",
+            lambda: _test_report('not_taken'),
+        ),
+        "close_open_trade": (
+            "Clicks a specific company/portfolio's '(X) Close Trade' button in TradingGenerator's "
+            "OPEN TRADES grid. To test that the right card gets picked, get more than one "
+            "portfolio showing there first (e.g. across different accounts of the same company) "
+            "-- you'll be asked which company/portfolio to target (defaults to whatever's "
+            "currently selected in TradingGenerator).",
+            _test_close_open_trade,
+        ),
+        "tg_status": (
+            "Read-only -- no setup needed. Prints the currently-selected company/portfolio in "
+            "TradingGenerator, whether it has a pending Trade Result prompt, and whether it's "
+            "listed in the OPEN TRADES grid.",
+            _test_tg_status,
+        ),
+    }
+
+    while True:
+        print("\nTest commands: " + ", ".join(test_commands) + ", back")
+        cmd = input("test> ").strip().lower()
+        if cmd in ("back", "exit", "quit", ""):
+            return
+        entry = test_commands.get(cmd)
+        if entry is None:
+            print(f"  Unknown test command '{cmd}'.")
+            continue
+        instructions, handler = entry
+        print(f"\n  Setup: {instructions}")
+        input("  Press Enter when ready to run this test (Ctrl+C to abort)... ")
+        try:
+            handler()
+        except Exception as exc:
+            print(f"  [FAIL] Test command raised: {exc!r}")
 
 
 def main():
@@ -82,8 +232,7 @@ def main():
 
         login_monitor.start()
 
-        print("\nCommands: 'web', 'web_multi', 'buy', 'sell', 'connect_tradovate'," \
-        " 'disconnect_tradovate', 'setup', 'quit'")
+        print("\nCommands: 'web', 'web_multi', 'test', 'setup', 'quit'")
         while True:
             cmd = input("> ").strip().lower()
             with state.session.driver_lock:
@@ -100,22 +249,9 @@ def main():
                 elif cmd == "web_multi":
                     hide_tg_window = _ask_hide_tg_window()
                     multi_signal_source.run_web_loop_multi(driver, hide_tg_window=hide_tg_window)
-                elif cmd == "buy":
-                    trading.place_order(driver, tp_ticks=150, sl_ticks=150, side="buy")
-                elif cmd == "sell":
-                    trading.place_order(driver, tp_ticks=150, sl_ticks=150, side="sell")
-                elif cmd == "connect_tradovate":
-                    # Temporary manual-test command for trading.connect_tradovate().
-                    # Uses the sole configured account -- see signal_source._pick_tradovate_account.
-                    if len(config.TRADOVATE_ACCOUNTS) == 1:
-                        account = next(iter(config.TRADOVATE_ACCOUNTS.values()))
-                        trading.connect_tradovate(driver, account['username'], account['password'])
-                    else:
-                        print(f"[FAIL] {len(config.TRADOVATE_ACCOUNTS)} accounts configured, "
-                              "need exactly 1 for this test command.")
-                elif cmd == "disconnect_tradovate":
-                    # Temporary manual-test command for trading.disconnect_tradovate().
-                    trading.disconnect_tradovate(driver)
+                elif cmd == "test":
+                    hide_tg_window = _ask_hide_tg_window()
+                    _run_test_menu(driver, tv_tab, hide_tg_window=hide_tg_window)
                 elif cmd == "setup":
                     setup_wizard.run_setup()
                 elif cmd == "quit":

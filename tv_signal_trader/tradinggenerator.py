@@ -530,9 +530,16 @@ RESULT_BUTTON_LABELS = {
 }
 
 
-def report_trade_result(driver, outcome):
+def report_trade_result(driver, outcome, company=None, portfolio=None):
     """Clicks the matching TRADE RESULT button on the current (TradingGenerator)
-    tab. `outcome` is one of 'tp', 'sl', 'not_taken'."""
+    tab. `outcome` is one of 'tp', 'sl', 'not_taken'.
+
+    If that button can't be found -- the Trade Result prompt isn't in the
+    state we expect, e.g. after a new trading day resets it, or a
+    TradingGenerator-side bug -- falls back to clicking this
+    company/portfolio's own '(X) Close Trade' button in the "OPEN TRADES"
+    grid instead, when company/portfolio are given: that's the only other
+    way TradingGenerator offers to clear a stuck open trade."""
     label = RESULT_BUTTON_LABELS[outcome]
     for btn in driver.find_elements(By.TAG_NAME, "button"):
         text = btn.text.strip()
@@ -541,6 +548,8 @@ def report_trade_result(driver, outcome):
             print(f"  Reported result: '{text}' [OK]")
             return True
     print(f"  WARNING: could not find a '{label}' result button")
+    if company and portfolio and close_open_trade_card(driver, company, portfolio):
+        return True
     return False
 
 

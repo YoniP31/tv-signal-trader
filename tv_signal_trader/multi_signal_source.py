@@ -177,9 +177,9 @@ def _refresh_open_positions(driver, web_tab, tv_tab, open_positions, connected_c
         )
         status.update_portfolio(company, portfolio, balance=balance, tier_size=tier_size, tier_range=tier_range)
 
-        # A manual close has no correct result to report at all (see below),
-        # so there's no point checking its daily P&L -- it's already being
-        # quarantined regardless.
+        # A manual close is always reported as Not Taken and quarantined
+        # regardless of daily P&L (see below), so there's no point checking
+        # it here.
         daily_limit_reason = None
         if outcome != 'manual_close' and (config.DAILY_PROFIT_LIMIT is not None
                                            or config.DAILY_LOSS_LIMIT is not None):
@@ -199,12 +199,18 @@ def _refresh_open_positions(driver, web_tab, tv_tab, open_positions, connected_c
 
         if outcome == 'manual_close':
             print(f"  [WARN] '{company} / {portfolio}' appears to have been closed manually or "
-                  "liquidated (both TP/SL cancelled, neither filled) - no correct result to report. "
-                  "Quarantining until the next session.")
+                  "liquidated (both TP/SL cancelled, neither filled) - reporting Trade Not Taken "
+                  "and quarantining until the next session.")
+            tg.report_trade_result(driver, 'not_taken', company=company, portfolio=portfolio)
+            status.record_trade_result(
+                company, portfolio,
+                asset=position['asset'], direction=position['direction'], contracts=position['contracts'],
+                sl_ticks=position['sl_ticks'], tp_ticks=position['tp_ticks'], result='not_taken',
+            )
             status.mark_portfolio_unavailable(company, portfolio, 'manual_close_or_liquidation')
             quarantined.add((company, portfolio))
         else:
-            tg.report_trade_result(driver, outcome)
+            tg.report_trade_result(driver, outcome, company=company, portfolio=portfolio)
             status.record_trade_result(
                 company, portfolio,
                 asset=position['asset'], direction=position['direction'], contracts=position['contracts'],
@@ -465,26 +471,31 @@ def _reconcile_open_positions_at_startup(driver, web_tab, tv_tab):
         # Even with no pending Trade Result prompt, TradingGenerator's own
         # "OPEN TRADES" grid can still list this portfolio as open -- seen
         # after a new trading day resets the prompt, or a TradingGenerator-
-        # side bug. There's no Trade Result button to report through in
-        # that case, so it has to be cleared via its own Close Trade button
-        # instead (stale_open_card below), regardless of whether the
-        # position is actually still open or already closed in TradingView.
-        stale_open_card = not pending_result and tg.has_open_trade_card(driver, company, portfolio)
-        if not pending_result and not stale_open_card:
+        # side bug. tg.report_trade_result already falls back to that grid's
+        # own Close Trade button when it can't find a labeled result button,
+        # so it's still the right call below either way -- this check is
+        # only needed to decide whether there's anything to do here at all.
+        has_open_card = not pending_result and tg.has_open_trade_card(driver, company, portfolio)
+        if not pending_result and not has_open_card:
             continue
 
         # Either TradingGenerator still shows a pending Trade Result prompt,
         # or it has no prompt but still lists this portfolio as open -- the
-        # position closed (or was manually resolved) while we were down and
+        # position resolved (or was manually closed) while we were down and
         # TradingGenerator's own bookkeeping was never cleared for it.
         driver.switch_to.window(tv_tab)
         bracket = trading.find_last_bracket(driver)
         tp_id, sl_id = bracket.get('tp'), bracket.get('sl')
-        if not tp_id or not sl_id:
+        if tp_id and sl_id:
+            outcome = trading.check_bracket_status(driver, tp_id, sl_id)
+        else:
+            # No bracket order history at all for this account -- nothing
+            # concrete to determine an outcome from, so there's no TP/SL
+            # result to report. Reporting Not Taken clears TradingGenerator's
+            # stuck entry rather than leaving it stuck for manual review.
             print(f"  [WARN] '{company} / {portfolio}' has an unreported/stale open trade but its "
-                  "last bracket order couldn't be found - leaving it for manual review.")
-            continue
-        outcome = trading.check_bracket_status(driver, tp_id, sl_id)
+                  "last bracket order couldn't be found - reporting Trade Not Taken.")
+            outcome = 'not_taken'
 
         driver.switch_to.window(web_tab)
         if not _select_and_verify(driver, company, portfolio):
@@ -492,30 +503,28 @@ def _reconcile_open_positions_at_startup(driver, web_tab, tv_tab):
                   "couldn't be safely re-selected to clear it - leaving it for manual review.")
             continue
 
+        quarantine_after = False
         if outcome == 'manual_close':
             print(f"  [WARN] '{company} / {portfolio}' closed manually or was liquidated while the "
-                  "bot was down - no correct result to report. Quarantining until the next session.")
-            status.mark_portfolio_unavailable(company, portfolio, 'manual_close_or_liquidation')
-            if stale_open_card:
-                tg.close_open_trade_card(driver, company, portfolio)
-            continue
-        if outcome not in ('tp', 'sl'):
+                  "bot was down - reporting Trade Not Taken and quarantining until the next session.")
+            outcome = 'not_taken'
+            quarantine_after = True
+        elif outcome not in ('tp', 'sl', 'not_taken'):
             print(f"  [WARN] '{company} / {portfolio}' has an unreported/stale open trade but its "
                   f"last bracket status ('{outcome}') couldn't be resolved - leaving it for manual review.")
             continue
 
         params = tg.read_trade_parameters(driver)
-        print(f"  [RECOVER] '{company} / {portfolio}' closed ({outcome}) while the bot was down and "
+        print(f"  [RECOVER] '{company} / {portfolio}' resolved ({outcome}) while the bot was down and "
               "was never reported - reporting now.")
-        if pending_result:
-            tg.report_trade_result(driver, outcome)
-        else:
-            tg.close_open_trade_card(driver, company, portfolio)
+        tg.report_trade_result(driver, outcome, company=company, portfolio=portfolio)
         status.record_trade_result(
             company, portfolio,
             asset=params['asset'], direction=params['direction'], contracts=params['contracts'],
             sl_ticks=params['sl_ticks'], tp_ticks=params['tp_ticks'], result=outcome,
         )
+        if quarantine_after:
+            status.mark_portfolio_unavailable(company, portfolio, 'manual_close_or_liquidation')
 
     return open_positions, connected_company
 
@@ -762,7 +771,7 @@ def run_web_loop_multi(driver, max_positions_per_company=None, command_name="web
                     print(f"  [WARN] Could not safely select '{company} / {portfolio}' to report "
                           "Not Taken - skipping (it may have just been removed).")
                     return
-                tg.report_trade_result(driver, 'not_taken')
+                tg.report_trade_result(driver, 'not_taken', company=company, portfolio=portfolio)
                 status.record_trade_result(
                     company, portfolio,
                     asset=params['asset'], direction=params['direction'], contracts=params['contracts'],

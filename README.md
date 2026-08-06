@@ -20,7 +20,8 @@ The implementation lives in the [tv_signal_trader/](tv_signal_trader/) package, 
 | [tv_signal_trader/signal_source.py](tv_signal_trader/signal_source.py) | Shared helpers reused by the trading loop below: `generate_next_trade()`, `sweep_liquidated_accounts()`, `report_not_taken()` |
 | [tv_signal_trader/multi_signal_source.py](tv_signal_trader/multi_signal_source.py) | `run_web_loop_multi()` — the trading loop behind **both** `web` and `web_multi` (see below); the concurrency support that used to make this "multi_signal_source" a separate, `web_multi`-only path is now just a parameter |
 | [tv_signal_trader/status.py](tv_signal_trader/status.py) / [state.py](tv_signal_trader/state.py) / [monitor.py](tv_signal_trader/monitor.py) | `status.json` tracking (app/loop state, per-portfolio balances and trade history) and the background login/browser-alive poller |
-| [tv_signal_trader/cli.py](tv_signal_trader/cli.py) | Interactive command loop |
+| [tv_signal_trader/cli.py](tv_signal_trader/cli.py) | Interactive command loop, including the `test` submenu of one-off manual test commands |
+| [tests/](tests/) | `test_reconciliation.py` — mocked, no-browser simulation of the crash-recovery/reporting decision logic; see "Manual testing" below |
 
 ### 1. Browser setup
 
@@ -103,10 +104,15 @@ Running the script drops you into a `>` prompt that accepts:
 |--------------|----------------------------------------------------------------------|
 | `web`        | Runs the automatic trading loop, one position at a time (Ctrl+C to stop) |
 | `web_multi`  | Runs the same loop, allowing several concurrent positions per company (see above) |
-| `buy`        | Places a manual buy with 150-tick TP/SL                              |
-| `sell`       | Places a manual sell with 150-tick TP/SL                             |
+| `test`       | Opens a submenu of one-off manual test commands (buy/sell, connect/disconnect Tradovate, reporting a Trade Result, closing a stale Open Trades card, ...) — see "Manual testing" below |
 | `setup`      | Re-run setup to change your TradingGenerator credentials or Tradovate accounts |
 | `quit`       | Closes the browser and exits                                         |
+
+### Manual testing — the `test` command, and `tests/`
+
+Typing `test` at the `>` prompt opens a submenu (`buy`, `sell`, `connect_tradovate`, `disconnect_tradovate`, `report_tp`, `report_sl`, `report_not_taken`, `close_open_trade`, `tg_status`, `back`) for exercising one piece at a time against whatever's actually on the page right now, without running the full loop — e.g. to confirm `report_trade_result` clicks the right button, or that `close_open_trade_card` picks the right portfolio's card when several are open at once. Each one prints setup instructions and waits for Enter, so there's time to actually arrange the scenario (select the right portfolio, open the right panel) in the browser first. Implementation: `_run_test_menu` in [tv_signal_trader/cli.py](tv_signal_trader/cli.py).
+
+Separately, [tests/test_reconciliation.py](tests/test_reconciliation.py) is a mocked, no-browser-needed simulation of the crash-recovery/reporting *decision logic* itself (which DOM observation leads to which action) — run it with `python -m unittest tests.test_reconciliation -v`. It doesn't replace the `test` command's live checks against the real page; it exists to catch logic regressions quickly and repeatably.
 
 ## How to run it
 
