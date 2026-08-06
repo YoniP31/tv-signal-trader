@@ -9,4 +9,4 @@ this file's default/committed value, and it never changes unless build.ps1
 is actively mid-build.
 """
 
-BUILD_VARIANT = "user"
+BUILD_VARIANT = "admin"
