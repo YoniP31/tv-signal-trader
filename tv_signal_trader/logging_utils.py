@@ -7,10 +7,32 @@ shadowing the built-in locally rather than monkey-patching it globally.
 """
 
 import builtins
+import contextlib
 import datetime
+
+_suppressed = False
+
+
+@contextlib.contextmanager
+def suppressed():
+    """Silences every timestamped_print() call (across every module that
+    imports it as `print`) for the duration of the `with` block -- used by
+    cli.py to hide the regular-user build's web/web_multi console output
+    (see config.IS_ADMIN_BUILD) without threading a flag through every
+    print call site. Not reentrant-safe across threads, but this app only
+    ever has one thread driving the trading loop at a time."""
+    global _suppressed
+    previous = _suppressed
+    _suppressed = True
+    try:
+        yield
+    finally:
+        _suppressed = previous
 
 
 def timestamped_print(*args, **kwargs):
+    if _suppressed:
+        return
     # A leading "\n" in the first arg is a deliberate blank-line separator
     # used throughout the codebase for visual spacing -- print it on its
     # own so the timestamp still prefixes the actual message, not the

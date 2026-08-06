@@ -4,6 +4,7 @@ import signal
 from . import browser
 from . import config
 from . import humanize
+from . import logging_utils
 from . import monitor
 from . import multi_signal_source
 from . import setup_wizard
@@ -219,6 +220,25 @@ def main():
             return None
         return choice not in ("y", "yes")
 
+    def _resolve_hide_tg_window():
+        # The regular-user build never asks and is never shown the window,
+        # full stop -- not just defaulted to hidden, so it can't be flipped
+        # visible by a stray config.py edit either. Only the admin build
+        # gets a say (see _ask_hide_tg_window above).
+        if not config.IS_ADMIN_BUILD:
+            return True
+        return _ask_hide_tg_window()
+
+    def _run_trading_loop(**kwargs):
+        # The regular-user build's web/web_multi runs silently -- see
+        # logging_utils.suppressed -- until there's something more
+        # deliberately built to show instead of raw console output.
+        if config.IS_ADMIN_BUILD:
+            multi_signal_source.run_web_loop_multi(driver, **kwargs)
+        else:
+            with logging_utils.suppressed():
+                multi_signal_source.run_web_loop_multi(driver, **kwargs)
+
     try:
         print("Opening chart...")
         driver.get(config.CHART_URL)
@@ -232,7 +252,10 @@ def main():
 
         login_monitor.start()
 
-        print("\nCommands: 'web', 'web_multi', 'test', 'setup', 'quit'")
+        if config.IS_ADMIN_BUILD:
+            print("\nCommands: 'web', 'web_multi', 'test', 'setup', 'quit'")
+        else:
+            print("\nCommands: 'web', 'web_multi', 'setup', 'quit'")
         while True:
             cmd = input("> ").strip().lower()
             with state.session.driver_lock:
@@ -242,14 +265,14 @@ def main():
                     # with the engine's existing "only one company engaged at
                     # a time" rule, that reproduces single-position-at-a-time
                     # behavior without a separate implementation to maintain.
-                    hide_tg_window = _ask_hide_tg_window()
-                    multi_signal_source.run_web_loop_multi(
-                        driver, max_positions_per_company=1, command_name="web", hide_tg_window=hide_tg_window
+                    hide_tg_window = _resolve_hide_tg_window()
+                    _run_trading_loop(
+                        max_positions_per_company=1, command_name="web", hide_tg_window=hide_tg_window
                     )
                 elif cmd == "web_multi":
-                    hide_tg_window = _ask_hide_tg_window()
-                    multi_signal_source.run_web_loop_multi(driver, hide_tg_window=hide_tg_window)
-                elif cmd == "test":
+                    hide_tg_window = _resolve_hide_tg_window()
+                    _run_trading_loop(hide_tg_window=hide_tg_window)
+                elif cmd == "test" and config.IS_ADMIN_BUILD:
                     hide_tg_window = _ask_hide_tg_window()
                     _run_test_menu(driver, tv_tab, hide_tg_window=hide_tg_window)
                 elif cmd == "setup":

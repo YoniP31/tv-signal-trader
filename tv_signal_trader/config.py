@@ -10,6 +10,15 @@ try:
 except NameError:
     _RUNNING_COMPILED = False
 
+# "admin" (full feature set) vs "user" (restricted -- see every
+# IS_ADMIN_BUILD check below) build variant. Baked in at compile time by
+# build.ps1 overwriting _build_variant.py's literal value before invoking
+# Nuitka -- not read from an environment variable, so it can't be changed
+# at runtime by whoever ends up running the .exe. Always "admin" when
+# running from source.
+from ._build_variant import BUILD_VARIANT  # noqa: E402
+IS_ADMIN_BUILD = BUILD_VARIANT == "admin"
+
 if _RUNNING_COMPILED:
     # Nuitka --onefile extracts to a fresh temp dir every run, so __file__
     # is useless for anything that needs to persist (.env, status.json).

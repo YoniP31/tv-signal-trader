@@ -11,6 +11,7 @@ The implementation lives in the [tv_signal_trader/](tv_signal_trader/) package, 
 | [main.py](main.py) | Entry point — `python main.py` |
 | [stop.py](stop.py) | Standalone script (not part of the package) — a guaranteed, independent way to stop everything if Ctrl+C ever doesn't; see "How to run it" below |
 | [tv_signal_trader/config.py](tv_signal_trader/config.py) | Paths, URLs, `.env`-backed settings, and other constants |
+| [tv_signal_trader/_build_variant.py](tv_signal_trader/_build_variant.py) | `BUILD_VARIANT` — overwritten by `build.ps1` to select the admin/user `.exe` variant (see "Building a standalone .exe" below); always `"admin"` running from source |
 | [tv_signal_trader/setup_wizard.py](tv_signal_trader/setup_wizard.py) | First-run/`setup` command: prompts for and persists TradingGenerator credentials and (multiple, one per prop firm) Tradovate accounts |
 | [tv_signal_trader/browser.py](tv_signal_trader/browser.py) | Chrome setup, stealth tweaks, download preferences, and process lifecycle (`is_alive`, `force_kill`, `hide_new_window`/`hide_window_by_title`) |
 | [tv_signal_trader/humanize.py](tv_signal_trader/humanize.py) | Randomized pauses and human-like typing |
@@ -104,15 +105,17 @@ Running the script drops you into a `>` prompt that accepts:
 |--------------|----------------------------------------------------------------------|
 | `web`        | Runs the automatic trading loop, one position at a time (Ctrl+C to stop) |
 | `web_multi`  | Runs the same loop, allowing several concurrent positions per company (see above) |
-| `test`       | Opens a submenu of one-off manual test commands (buy/sell, connect/disconnect Tradovate, reporting a Trade Result, closing a stale Open Trades card, ...) — see "Manual testing" below |
+| `test`       | **Admin build only** — opens a submenu of one-off manual test commands (buy/sell, connect/disconnect Tradovate, reporting a Trade Result, closing a stale Open Trades card, ...) — see "Manual testing" below |
 | `setup`      | Re-run setup to change your TradingGenerator credentials or Tradovate accounts |
 | `quit`       | Closes the browser and exits                                         |
 
+The regular-user `.exe` variant (see "Building a standalone .exe" below) only offers `web`/`web_multi`/`setup`/`quit` — no `test` command, TradingGenerator's window is always hidden with no prompt, and `web`/`web_multi` produce no console output.
+
 ### Manual testing — the `test` command, and `tests/`
 
-Typing `test` at the `>` prompt opens a submenu (`buy`, `sell`, `connect_tradovate`, `disconnect_tradovate`, `report_tp`, `report_sl`, `report_not_taken`, `close_open_trade`, `tg_status`, `back`) for exercising one piece at a time against whatever's actually on the page right now, without running the full loop — e.g. to confirm `report_trade_result` clicks the right button, or that `close_open_trade_card` picks the right portfolio's card when several are open at once. Each one prints setup instructions and waits for Enter, so there's time to actually arrange the scenario (select the right portfolio, open the right panel) in the browser first. Implementation: `_run_test_menu` in [tv_signal_trader/cli.py](tv_signal_trader/cli.py).
+Typing `test` at the `>` prompt (admin build only) opens a submenu (`buy`, `sell`, `connect_tradovate`, `disconnect_tradovate`, `report_tp`, `report_sl`, `report_not_taken`, `close_open_trade`, `tg_status`, `back`) for exercising one piece at a time against whatever's actually on the page right now, without running the full loop — e.g. to confirm `report_trade_result` clicks the right button, or that `close_open_trade_card` picks the right portfolio's card when several are open at once. Each one prints setup instructions and waits for Enter, so there's time to actually arrange the scenario (select the right portfolio, open the right panel) in the browser first. Implementation: `_run_test_menu` in [tv_signal_trader/cli.py](tv_signal_trader/cli.py).
 
-Separately, [tests/test_reconciliation.py](tests/test_reconciliation.py) is a mocked, no-browser-needed simulation of the crash-recovery/reporting *decision logic* itself (which DOM observation leads to which action) — run it with `python -m unittest tests.test_reconciliation -v`. It doesn't replace the `test` command's live checks against the real page; it exists to catch logic regressions quickly and repeatably.
+Separately, [tests/](tests/) has mocked, no-browser-needed unit tests: `test_reconciliation.py` simulates the crash-recovery/reporting *decision logic* itself (which DOM observation leads to which action), and `test_logging_utils.py` covers the admin/user build output-suppression mechanism (see "Building a standalone .exe" below). Run with `python -m unittest discover tests -v`. These don't replace the `test` command's live checks against the real page; they exist to catch logic regressions quickly and repeatably.
 
 ## How to run it
 
@@ -149,10 +152,23 @@ It uses the same profile-directory process lookup as `force_kill`, plus stops th
 
 ## Building a standalone .exe
 
-For sharing this with a few trusted people without handing them the source, [Nuitka](https://nuitka.net/) compiles the whole app (Python → C → machine code) into a single `tv-signal-trader.exe`. This is obfuscation, not real security — treat it as raising the bar for casual inspection, not as a place to store secrets. No credentials are ever compiled in: `.env` and `status.json` are read from/written next to wherever the `.exe` itself lives at runtime ([tv_signal_trader/config.py](tv_signal_trader/config.py) resolves this via `sys.argv[0]`, not `__file__` — `--onefile` self-extracts to a new temp directory on every launch, so anything anchored to `__file__` would silently reset each run).
+For sharing this with a few trusted people without handing them the source, [Nuitka](https://nuitka.net/) compiles the whole app (Python → C → machine code) into a single `.exe`. This is obfuscation, not real security — treat it as raising the bar for casual inspection, not as a place to store secrets. No credentials are ever compiled in: `.env` and `status.json` are read from/written next to wherever the `.exe` itself lives at runtime ([tv_signal_trader/config.py](tv_signal_trader/config.py) resolves this via `sys.argv[0]`, not `__file__` — `--onefile` self-extracts to a new temp directory on every launch, so anything anchored to `__file__` would silently reset each run).
+
+### Two variants: admin vs. regular user
+
+The build produces one of two variants, controlled by `config.IS_ADMIN_BUILD`:
+
+- **admin** (default) — full feature set, unchanged from the app's original behavior: all commands including `test`, asked whether to show/hide the TradingGenerator window, normal console output.
+- **user** — restricted: only `web`/`web_multi`/`setup`/`quit` (no `test` submenu), TradingGenerator's window is always hidden with no prompt, and `web`/`web_multi` produce no console output at all (silenced via `logging_utils.suppressed()` — a placeholder until something more deliberate replaces it).
+
+The variant is baked into the `.exe` at compile time, not read from an environment variable at runtime — so it can't be changed by whoever ends up running it. [build.ps1](build.ps1) does this by overwriting [tv_signal_trader/_build_variant.py](tv_signal_trader/_build_variant.py)'s `BUILD_VARIANT` literal right before invoking Nuitka, then restoring it back to `"admin"` afterward (so the working tree is left clean either way, and running from source is always the admin build). If a build gets interrupted before that restore runs, `git checkout -- tv_signal_trader/_build_variant.py` puts it back.
 
 1. `pip install -r requirements-build.txt`
-2. Run [build.ps1](build.ps1) (or the `nuitka` command inside it directly). Output is `dist/tv-signal-trader.exe`. Includes `--include-package-data=tzdata`: the trading-session check needs Israel's IANA timezone data bundled in, since Windows has no system tz database and Nuitka doesn't pick up a pure-data package's files automatically.
+2. Run [build.ps1](build.ps1) (or the `nuitka` command inside it directly):
+   - `.\build.ps1` — admin build, output `dist/tv-signal-trader.exe`.
+   - `.\build.ps1 -Variant user` — regular-user build, output `dist/tv-signal-trader-user.exe`.
+
+   Includes `--include-package-data=tzdata`: the trading-session check needs Israel's IANA timezone data bundled in, since Windows has no system tz database and Nuitka doesn't pick up a pure-data package's files automatically.
 3. Hand the recipient just that one `.exe` — they'll get the same first-run setup wizard prompting for their own TradingGenerator credentials, and Selenium Manager still fetches chromedriver on their machine automatically.
 4. If Nuitka builds with MSVC (`cl.exe`) rather than MinGW64, it can't statically link the Windows C runtime, so recipients without it already installed will need the [Visual C++ Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe) — a small, extremely common one-time install.
 5. Don't commit `dist/` or the `.exe` into git — publish built binaries as [GitHub Releases](https://docs.github.com/en/repositories/releasing-projects-on-github) assets instead, so the repo itself doesn't accumulate large binary blobs. Attach a copy of [docs/.env](docs/.env) alongside it (already a committed template with credentials blanked out, listing every configurable field) so recipients who skip the setup wizard's prompts still see what keys exist — see [v0.2.0](https://github.com/YoniP31/tv-signal-trader/releases/tag/v0.2.0) for an earlier example.
