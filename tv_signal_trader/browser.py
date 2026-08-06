@@ -106,6 +106,26 @@ def force_kill(driver=None):
         print(f"  [WARN] force_kill: sweeping/killing profile processes failed: {e}")
 
 
+def _enum_hwnds():
+    """Windows only: every current top-level window's hwnd, regardless of
+    title or visibility -- shared by hide_window_by_title (which filters by
+    title afterward) and snapshot_hwnds/hide_new_window (which don't care
+    about title at all, only "is this hwnd new"). Empty list on non-Windows."""
+    if sys.platform != "win32":
+        return []
+
+    user32 = ctypes.windll.user32
+    hwnds = []
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    def _callback(hwnd, _lparam):
+        hwnds.append(hwnd)
+        return True
+
+    user32.EnumWindows(_callback, 0)
+    return hwnds
+
+
 def hide_window_by_title(title_substring, timeout=10):
     """Windows only: finds the top-level OS window whose title contains
     `title_substring` and hides it via the Win32 API (SW_HIDE) -- removed
@@ -123,8 +143,11 @@ def hide_window_by_title(title_substring, timeout=10):
     hidden window keeps responding to .click()/execute_script() normally.
 
     Polls for up to `timeout` seconds since the window may not have set its
-    real title yet right after creation. Returns True if found and hidden,
-    False otherwise (e.g. not on Windows, or the window never appeared).
+    real title yet right after creation -- prefer hide_new_window instead
+    when possible (see there): waiting for the real title means the window
+    is visible on screen for however long that takes, which this exists
+    purely as a fallback for. Returns True if found and hidden, False
+    otherwise (e.g. not on Windows, or the window never appeared).
     """
     if sys.platform != "win32":
         return False
@@ -133,20 +156,14 @@ def hide_window_by_title(title_substring, timeout=10):
     SW_HIDE = 0
 
     def _find_hwnd():
-        found = []
-
-        @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
-        def _callback(hwnd, _lparam):
+        for hwnd in _enum_hwnds():
             length = user32.GetWindowTextLengthW(hwnd)
             if length > 0:
                 buf = ctypes.create_unicode_buffer(length + 1)
                 user32.GetWindowTextW(hwnd, buf, length + 1)
                 if title_substring.lower() in buf.value.lower():
-                    found.append(hwnd)
-            return True
-
-        user32.EnumWindows(_callback, 0)
-        return found[0] if found else None
+                    return hwnd
+        return None
 
     elapsed = 0.0
     while elapsed < timeout:
@@ -156,4 +173,43 @@ def hide_window_by_title(title_substring, timeout=10):
             return True
         time.sleep(0.5)
         elapsed += 0.5
+    return False
+
+
+def snapshot_hwnds():
+    """Windows only: every current top-level window's hwnd -- call this
+    right *before* triggering a new window's creation (e.g. window.open),
+    then pass the result to hide_new_window to catch whichever hwnd shows
+    up that wasn't here yet. Empty list on non-Windows."""
+    return _enum_hwnds()
+
+
+def hide_new_window(before_hwnds, timeout=5, poll_interval=0.05):
+    """Windows only: hides whichever top-level window appears that wasn't
+    in `before_hwnds` (see snapshot_hwnds). Polls much faster than
+    hide_window_by_title and doesn't wait for a real title at all -- it
+    catches the OS-level window object as soon as it exists, typically
+    before it's even painted, so (unlike hide_window_by_title, which has to
+    wait for the page to load and set its title) it has little to no
+    chance to actually flash on screen.
+
+    Returns True if a new window was found and hidden, False otherwise
+    (e.g. not on Windows, or none appeared within `timeout`) -- callers
+    should fall back to hide_window_by_title in that case.
+    """
+    if sys.platform != "win32":
+        return False
+
+    user32 = ctypes.windll.user32
+    SW_HIDE = 0
+    before = set(before_hwnds)
+    elapsed = 0.0
+    while elapsed < timeout:
+        new_hwnds = [h for h in _enum_hwnds() if h not in before]
+        if new_hwnds:
+            for hwnd in new_hwnds:
+                user32.ShowWindow(hwnd, SW_HIDE)
+            return True
+        time.sleep(poll_interval)
+        elapsed += poll_interval
     return False
