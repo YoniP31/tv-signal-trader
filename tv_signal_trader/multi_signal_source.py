@@ -291,9 +291,19 @@ def _open_position(driver, web_tab, tv_tab, params, connected_company):
     status.mark_portfolio_available(company, portfolio)
 
     total_pl = None
-    if config.DAILY_PROFIT_LIMIT is not None or config.DAILY_LOSS_LIMIT is not None:
+    daily_limit_configured = config.DAILY_PROFIT_LIMIT is not None or config.DAILY_LOSS_LIMIT is not None
+    if daily_limit_configured:
         if trading.click_account_summary_tab(driver):
             total_pl = trading.read_total_pl(driver)
+        if total_pl is None:
+            # A daily limit IS configured, but couldn't be checked -- must
+            # not fall through and trade as if none were configured at all
+            # (adjust_ticks_for_daily_pnl below is itself a silent no-op for
+            # total_pl=None, precisely because it trusts the caller to have
+            # already handled "couldn't read" as a reason not to proceed).
+            print(f"  [FAIL] '{company} / {portfolio}' - could not read Total P/L to check the daily "
+                  "profit/loss limit before trading. Not risking an unchecked trade.")
+            return 'failed', connected_company, None
     if total_pl is not None:
         # Bulletproofing beyond "report correctly and TradingGenerator
         # won't offer a new trade": gated on the buffer's *max* rather than

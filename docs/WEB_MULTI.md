@@ -60,6 +60,10 @@ As a bulletproofing measure on top of correctly reporting results (which is what
 
 **How to test:** get Total P/L within `DAILY_PNL_CAP_BUFFER_MAX` dollars of a configured limit, run `web_multi`, and confirm it refuses to open the next signal there ("too little room to safely size a trade") rather than opening a heavily-capped trade.
 
+If Total P/L can't be read at all right before opening a trade (a transient DOM/timing glitch, or the broker panel wouldn't open) while a daily limit is configured, the trade is refused outright rather than opened uncapped and unchecked — an unreadable Total P/L is not the same as "no limit configured," and treating it that way would silently trade past a limit that's supposed to be protecting the account. It's simply retried the next time that signal/portfolio comes up.
+
+**How to test:** hard to trigger deliberately (needs a real read failure). If you suspect it happened, check the console for `[FAIL] '<company> / <portfolio>' - could not read Total P/L to check the daily profit/loss limit before trading` right before that portfolio's turn — the trade should not have been placed that cycle.
+
 ## Take-profit capping
 
 If a trade's take-profit would push an account's balance *past* its maximum, the bot shrinks the take-profit so the account instead lands just above the maximum — by a random amount between `TP_CAP_BUFFER_MIN` and `TP_CAP_BUFFER_MAX` dollars (default $50–$200) — rather than blowing far past it. This keeps profit-target accounts from wildly overshooting once they're close to passing.
