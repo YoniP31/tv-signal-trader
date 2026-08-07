@@ -577,51 +577,106 @@ def has_pending_trade_result(driver):
     return 'visible' in (section.get_attribute('class') or '').split()
 
 
-def _open_trade_card_for(driver, company, portfolio):
-    """Finds this company/portfolio's card in TradingGenerator's "OPEN
-    TRADES" grid (.open-trade-card), if any. Unlike the Trade Result prompt
-    above (which only ever applies to whichever portfolio is currently
-    selected), this grid lists every portfolio TradingGenerator currently
-    considers to have an open trade, regardless of selection -- returns the
-    matching card element, or None if this portfolio isn't listed there."""
-    for card in driver.find_elements(By.CSS_SELECTOR, ".open-trade-card"):
-        try:
-            card_company = card.find_element(By.CSS_SELECTOR, ".meta-company").text.strip()
-            card_portfolio = card.find_element(By.CSS_SELECTOR, ".meta-portfolio").text.strip()
-        except Exception:
-            continue
-        if card_company == company and card_portfolio == portfolio:
-            return card
-    return None
+def _card_company_portfolio(card):
+    try:
+        company = card.find_element(By.CSS_SELECTOR, ".meta-company").text.strip()
+        portfolio = card.find_element(By.CSS_SELECTOR, ".meta-portfolio").text.strip()
+    except Exception:
+        return None, None
+    return company, portfolio
+
+
+def list_open_trade_cards(driver, company, portfolio):
+    """Every card in TradingGenerator's "OPEN TRADES" grid (.open-trade-card)
+    for this exact company/portfolio, in DOM order -- which is also visual
+    left-to-right order, i.e. newest first, oldest last.
+
+    Unlike the Trade Result prompt (has_pending_trade_result, which only
+    ever applies to whichever portfolio is currently selected), this grid
+    lists every portfolio TradingGenerator currently considers to have an
+    open trade, regardless of selection. Tradovate only ever allows one
+    real open position per sub-account, but this list can still come back
+    with more than one card for the same company/portfolio -- stale
+    duplicates left behind by an earlier, never-cleared attempt -- which is
+    exactly the case close_open_trade_cards below exists to clean up."""
+    return [
+        card for card in driver.find_elements(By.CSS_SELECTOR, ".open-trade-card")
+        if _card_company_portfolio(card) == (company, portfolio)
+    ]
 
 
 def has_open_trade_card(driver, company, portfolio):
-    """Whether TradingGenerator's "OPEN TRADES" grid still lists a trade for
-    this company/portfolio. Can be True even when has_pending_trade_result
-    is False -- seen after a new trading day resets the Trade Result
-    prompt, or a TradingGenerator-side bug -- in which case there's no
-    Trade Result button to report through, and close_open_trade_card below
-    is the only way to clear the stale entry."""
-    return _open_trade_card_for(driver, company, portfolio) is not None
+    """Whether TradingGenerator's "OPEN TRADES" grid still lists at least
+    one trade for this company/portfolio. Can be True even when
+    has_pending_trade_result is False -- seen after a new trading day
+    resets the Trade Result prompt, or a TradingGenerator-side bug -- in
+    which case there's no Trade Result button to report through, and
+    close_open_trade_card below is the only way to clear the stale entry."""
+    return bool(list_open_trade_cards(driver, company, portfolio))
+
+
+def _click_card_close_button(card):
+    try:
+        card.find_element(By.CSS_SELECTOR, ".otl-close").click()
+        return True
+    except Exception:
+        return False
 
 
 def close_open_trade_card(driver, company, portfolio):
-    """Clicks the '(X) Close Trade' button on this company/portfolio's card
-    in TradingGenerator's "OPEN TRADES" grid -- the fallback way to clear a
-    stale open-trade entry when the normal Trade Result prompt isn't
-    available to report through (see has_open_trade_card). Returns True if
-    a matching card was found and clicked."""
-    card = _open_trade_card_for(driver, company, portfolio)
-    if card is None:
+    """Clicks the '(X) Close Trade' button on this company/portfolio's
+    newest card in TradingGenerator's "OPEN TRADES" grid -- the fallback
+    way to clear a stale open-trade entry when the normal Trade Result
+    prompt isn't available to report through (see has_open_trade_card).
+    Returns True if a matching card was found and clicked. If more than
+    one card exists for this company/portfolio, see close_open_trade_cards
+    to clear all of them at once."""
+    cards = list_open_trade_cards(driver, company, portfolio)
+    if not cards:
         return False
-    try:
-        card.find_element(By.CSS_SELECTOR, ".otl-close").click()
-    except Exception:
+    if not _click_card_close_button(cards[0]):
         print(f"  [WARN] Found '{company} / {portfolio}' in TradingGenerator's Open Trades grid "
               "but couldn't click its Close Trade button.")
         return False
     print(f"  Closed stale 'Open Trades' entry for '{company} / {portfolio}' in TradingGenerator [OK]")
     return True
+
+
+def close_open_trade_cards(driver, company, portfolio, keep_newest=False):
+    """Closes every card for this company/portfolio in TradingGenerator's
+    "OPEN TRADES" grid, via each one's own Close Trade button --
+    TradingGenerator can end up with more than one card for the same
+    account (stale duplicates left behind by an earlier, never-cleared
+    attempt), even though Tradovate only ever allows one real open
+    position per sub-account.
+
+    If `keep_newest`, leaves the first (newest, leftmost) card alone and
+    only closes the rest -- use this when Tradovate confirms a position
+    really is still open, so the newest card keeps tracking it while any
+    older, stale duplicates get cleared alongside it.
+
+    Re-queries the grid fresh before every click rather than closing
+    everything off one upfront list -- closing a card makes TradingGenerator
+    re-render the grid, which can invalidate (stale-element) the WebElement
+    references already held for every *other* card that was fetched at the
+    same time, one click before it actually gets used.
+
+    Returns how many cards were successfully closed."""
+    target_remaining = 1 if keep_newest else 0
+    close_at_index = 1 if keep_newest else 0
+    initial_count = len(list_open_trade_cards(driver, company, portfolio))
+    closed = 0
+    for _ in range(initial_count):
+        cards = list_open_trade_cards(driver, company, portfolio)
+        if len(cards) <= target_remaining:
+            break
+        if not _click_card_close_button(cards[close_at_index]):
+            print(f"  [WARN] Found a stale 'Open Trades' entry for '{company} / {portfolio}' but "
+                  "couldn't click its Close Trade button.")
+            break
+        closed += 1
+        humanize.pause(0.4, 0.8)
+    return closed
 
 
 def save_backup(driver):

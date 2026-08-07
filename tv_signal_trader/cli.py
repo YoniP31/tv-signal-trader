@@ -83,9 +83,27 @@ def _run_test_menu(driver, tv_tab, hide_tg_window=None):
             print("  [FAIL] No company/portfolio to close (nothing selected and none entered).")
             return
         if tg.close_open_trade_card(driver, company, portfolio):
-            print(f"  [OK] Closed '{company} / {portfolio}' via the Open Trades grid.")
+            print(f"  [OK] Closed '{company} / {portfolio}''s newest card via the Open Trades grid.")
         else:
             print(f"  [FAIL] '{company} / {portfolio}' isn't listed in the Open Trades grid.")
+
+    def _test_close_all_open_trades():
+        _tg_tab()
+        default_company, default_portfolio = tg.read_active_company_portfolio(driver)
+        company = input(f"  Company [default: {default_company or '(none selected)'}]: ").strip() or default_company
+        portfolio = (
+            input(f"  Portfolio [default: {default_portfolio or '(none selected)'}]: ").strip()
+            or default_portfolio
+        )
+        if not company or not portfolio:
+            print("  [FAIL] No company/portfolio to close (nothing selected and none entered).")
+            return
+        before = len(tg.list_open_trade_cards(driver, company, portfolio))
+        print(f"  '{company} / {portfolio}' currently has {before} Open Trades card(s).")
+        keep_newest = input("  Keep the newest one (y/n) [default: n]: ").strip().lower() in ("y", "yes")
+        closed = tg.close_open_trade_cards(driver, company, portfolio, keep_newest=keep_newest)
+        print(f"  [OK] Closed {closed} card(s) for '{company} / {portfolio}'"
+              f"{' (kept the newest)' if keep_newest else ''}.")
 
     def _test_tg_status():
         _tg_tab()
@@ -93,7 +111,8 @@ def _run_test_menu(driver, tv_tab, hide_tg_window=None):
         print(f"  Selected: '{company} / {portfolio}'")
         print(f"  Pending Trade Result prompt: {tg.has_pending_trade_result(driver)}")
         if company and portfolio:
-            print(f"  Listed in Open Trades grid: {tg.has_open_trade_card(driver, company, portfolio)}")
+            card_count = len(tg.list_open_trade_cards(driver, company, portfolio))
+            print(f"  Open Trades cards for this company/portfolio: {card_count}")
 
     test_commands = {
         "buy": (
@@ -131,17 +150,26 @@ def _run_test_menu(driver, tv_tab, hide_tg_window=None):
             lambda: _test_report('not_taken'),
         ),
         "close_open_trade": (
-            "Clicks a specific company/portfolio's '(X) Close Trade' button in TradingGenerator's "
-            "OPEN TRADES grid. To test that the right card gets picked, get more than one "
-            "portfolio showing there first (e.g. across different accounts of the same company) "
-            "-- you'll be asked which company/portfolio to target (defaults to whatever's "
-            "currently selected in TradingGenerator).",
+            "Clicks a specific company/portfolio's newest '(X) Close Trade' button in "
+            "TradingGenerator's OPEN TRADES grid (just the one, even if several cards exist for "
+            "it -- see close_all_open_trades to clear all of them). To test that the right card "
+            "gets picked, get more than one portfolio showing there first (e.g. across different "
+            "accounts of the same company) -- you'll be asked which company/portfolio to target "
+            "(defaults to whatever's currently selected in TradingGenerator).",
             _test_close_open_trade,
+        ),
+        "close_all_open_trades": (
+            "Closes every card for a specific company/portfolio in TradingGenerator's OPEN "
+            "TRADES grid -- useful for testing the startup-reconciliation duplicate-card cleanup. "
+            "Set up more than one card for the same company/portfolio first (e.g. by not "
+            "reporting a couple of trades in a row on the same portfolio), then confirm this "
+            "clears them, optionally keeping the newest one.",
+            _test_close_all_open_trades,
         ),
         "tg_status": (
             "Read-only -- no setup needed. Prints the currently-selected company/portfolio in "
-            "TradingGenerator, whether it has a pending Trade Result prompt, and whether it's "
-            "listed in the OPEN TRADES grid.",
+            "TradingGenerator, whether it has a pending Trade Result prompt, and how many cards "
+            "it has in the OPEN TRADES grid.",
             _test_tg_status,
         ),
     }

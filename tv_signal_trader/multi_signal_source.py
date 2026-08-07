@@ -403,6 +403,18 @@ def _reconcile_open_positions_at_startup(driver, web_tab, tv_tab):
     reset, or a TradingGenerator-side bug) by clicking its own Close Trade
     button instead -- see tg.has_open_trade_card/close_open_trade_card.
 
+    TradingGenerator's Open Trades grid is always checked (tg.
+    list_open_trade_cards), never skipped just because a normal Trade
+    Result prompt is also present -- Tradovate only ever allows one real
+    open position per sub-account, but TradingGenerator can still end up
+    with several stale duplicate cards for the same company/portfolio,
+    left behind by an earlier, never-cleared attempt, alongside an
+    otherwise perfectly normal reportable trade. If Tradovate confirms a
+    position really is still open, the newest card is the one recovered
+    into the ledger and any older duplicates are closed alongside it; if
+    nothing is genuinely open, every remaining card for that
+    company/portfolio gets closed once the outcome (if any) is reported.
+
     Source of truth is live DOM state (Tradovate's Orders table,
     TradingGenerator's still-displayed trade parameters/Trade Result
     prompt), not status.json -- it has no "pending report" bit and could
@@ -469,6 +481,16 @@ def _reconcile_open_positions_at_startup(driver, web_tab, tv_tab):
             }
             print(f"  [RECOVER] '{company} / {portfolio}' has an open position from a previous run - "
                   "added to the ledger.")
+            # Tradovate only ever allows one real open position per sub-
+            # account, so the newest Open Trades card is the one just
+            # recovered above -- anything older for this same
+            # company/portfolio is a stale duplicate left over from an
+            # earlier, never-cleared attempt, and needs clearing too.
+            extra_closed = tg.close_open_trade_cards(driver, company, portfolio, keep_newest=True)
+            if extra_closed:
+                print(f"  [WARN] '{company} / {portfolio}' also had {extra_closed} stale duplicate "
+                      f"Open Trades entr{'y' if extra_closed == 1 else 'ies'} alongside its real open "
+                      "position - closed the older one(s), keeping the newest.")
             continue
 
         driver.switch_to.window(web_tab)
@@ -476,16 +498,24 @@ def _reconcile_open_positions_at_startup(driver, web_tab, tv_tab):
             print(f"  [WARN] '{company} / {portfolio}' couldn't be safely selected in "
                   "TradingGenerator to check for a pending Trade Result - skipping.")
             continue
+        # _select_and_verify can return instantly with no settle time at all
+        # if this portfolio's tab happened to already be marked 'active'
+        # (select_portfolio only pauses when it actually has to click) --
+        # e.g. right after closing the previous portfolio's last Open
+        # Trades card, if TradingGenerator auto-advances its own selection
+        # as a side effect. Without a beat here, the Trade Result section
+        # and Open Trades grid below can still be catching up to that
+        # transition and read as empty even though they're not.
+        humanize.pause(0.5, 1.0)
 
         pending_result = tg.has_pending_trade_result(driver)
-        # Even with no pending Trade Result prompt, TradingGenerator's own
-        # "OPEN TRADES" grid can still list this portfolio as open -- seen
-        # after a new trading day resets the prompt, or a TradingGenerator-
-        # side bug. tg.report_trade_result already falls back to that grid's
-        # own Close Trade button when it can't find a labeled result button,
-        # so it's still the right call below either way -- this check is
-        # only needed to decide whether there's anything to do here at all.
-        has_open_card = not pending_result and tg.has_open_trade_card(driver, company, portfolio)
+        # Always check the Open Trades grid too, even when there's a normal
+        # pending Trade Result prompt -- TradingGenerator can end up with
+        # extra stale duplicate cards for this same company/portfolio on
+        # top of a perfectly normal reportable trade (e.g. left behind by
+        # an earlier, never-cleared attempt), so this isn't something the
+        # presence of a pending result lets us skip checking.
+        has_open_card = tg.has_open_trade_card(driver, company, portfolio)
         if not pending_result and not has_open_card:
             continue
 
@@ -535,6 +565,17 @@ def _reconcile_open_positions_at_startup(driver, web_tab, tv_tab):
         )
         if quarantine_after:
             status.mark_portfolio_unavailable(company, portfolio, 'manual_close_or_liquidation')
+
+        # Nothing is genuinely open for this account (confirmed above --
+        # this branch is only reached when find_working_bracket found
+        # nothing), so every card still left for it in the Open Trades grid
+        # is stale -- the report just above may have already cleared one
+        # via its own Close Trade fallback, but there can be more than one
+        # duplicate left over from an earlier, never-cleared attempt.
+        extra_closed = tg.close_open_trade_cards(driver, company, portfolio, keep_newest=False)
+        if extra_closed:
+            print(f"  Cleared {extra_closed} stale Open Trades entr{'y' if extra_closed == 1 else 'ies'} "
+                  f"for '{company} / {portfolio}'.")
 
     return open_positions, connected_company
 
