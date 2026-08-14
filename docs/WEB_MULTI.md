@@ -1,13 +1,13 @@
 # `web` / `web_multi` — the trading loop
 
-`web` and `web_multi` are the same engine, [tv_signal_trader/multi_signal_source.py](../tv_signal_trader/multi_signal_source.py) — not two separate implementations. The only difference is `MAX_POSITIONS_PER_COMPANY`: `web` forces it to 1, so combined with rule 3 below ("only one company engaged at a time") it trades one signal at a time, same as it always has. `web_multi` uses whatever's configured in `.env` (default 3), allowing several concurrent positions per company. Everything else on this page — quarantining, daily limits, crash recovery, the sweep, all of it — applies identically to both commands.
+`web` and `web_multi` are the same engine, [tv_signal_trader/multi_signal_source.py](../tv_signal_trader/multi_signal_source.py) — not two separate implementations. The only difference is `MPPC` (max positions per company): `web` forces it to 1, so combined with rule 3 below ("only one company engaged at a time") it trades one signal at a time, same as it always has. `web_multi` uses whatever's configured in `.env` (default 3), allowing several concurrent positions per company. Everything else on this page — quarantining, daily limits, crash recovery, the sweep, all of it — applies identically to both commands.
 
 Type `web` or `web_multi` at the `>` prompt to run one. Either command first asks whether to show TradingGenerator's window just for this run (Enter keeps `config.HIDE_TRADINGGENERATOR_WINDOW`'s current default) — see the main [README](../README.md#4-the-automatic-trading-loop--run_web_loop_multidriver-).
 
 ## The concurrency rules
 
 1. **One open position per portfolio.** A portfolio that already has a trade open won't get a second one until the first closes.
-2. **At most `MAX_POSITIONS_PER_COMPANY` open positions per company at once** (default 3, set in `.env`; forced to 1 for the `web` command regardless of this setting).
+2. **At most `MPPC` open positions per company at once** (default 3, set in `.env`; forced to 1 for the `web` command regardless of this setting).
 3. **Only one company may have open positions at a time.** If a signal comes in for a different company while the current one still has open positions, it waits for all of them to close first, then switches over.
 
 The bot decides whether it's allowed to open a signal *before* pressing "Generate New Trade" — it always knows the next portfolio TradingGenerator wants to trade next (from the "Next Portfolio to Trade" box), and checks it against the rules above first.

@@ -1,3 +1,4 @@
+import base64
 import datetime
 import os
 import re
@@ -115,7 +116,7 @@ _DEFAULT_ACCOUNT_TIER_MAX = {
 _DEFAULT_TP_CAP_BUFFER_RANGE = (50, 200)
 
 # web_multi only: at most this many concurrently open positions at a single
-# company. Overridable via MAX_POSITIONS_PER_COMPANY in .env.
+# company. Overridable via MPPC in .env.
 _DEFAULT_MAX_POSITIONS_PER_COMPANY = 3
 
 # web_multi only: when a trade's take-profit/stop-loss would push today's
@@ -198,6 +199,35 @@ def in_no_trade_window(now=None):
     return NO_TRADE_START_TIME <= current_time <= NO_TRADE_END_TIME
 
 
+# TradingGenerator's credentials are the only ones stored obscured in
+# .env (Tradovate accounts are left as plain text -- not part of this ask).
+# This is casual obscurity against someone glancing at the file, not real
+# encryption -- base64 is trivially reversible by anyone who looks for it.
+# The setup wizard's terminal prompts are untouched (still plain input()),
+# and every other config.py consumer keeps reading/writing plain values
+# from _env -- only _load_env_file/set_env_values below know this exists.
+_OBSCURED_ENV_KEYS = {"TRADINGGENERATOR_USERNAME", "TRADINGGENERATOR_PASSWORD"}
+_OBSCURE_PREFIX = "b64:"
+
+
+def _obscure(value):
+    return _OBSCURE_PREFIX + base64.b64encode(value.encode("utf-8")).decode("ascii")
+
+
+def _unobscure(value):
+    # The prefix (rather than just trying to base64-decode anything found)
+    # is what lets this tell an already-obscured value apart from a plain
+    # one -- e.g. an existing .env from before this existed -- without
+    # guessing: decoding a plain password as if it might be base64 could,
+    # rarely, "succeed" into corrupted garbage instead of failing loudly.
+    if not value.startswith(_OBSCURE_PREFIX):
+        return value
+    try:
+        return base64.b64decode(value[len(_OBSCURE_PREFIX):].encode("ascii")).decode("utf-8")
+    except Exception:
+        return value
+
+
 def _load_env_file(path):
     values = {}
     if os.path.exists(path):
@@ -207,7 +237,10 @@ def _load_env_file(path):
                 if not line or line.startswith("#") or "=" not in line:
                     continue
                 key, _, value = line.partition("=")
-                values[key.strip()] = value.strip()
+                key, value = key.strip(), value.strip()
+                if key in _OBSCURED_ENV_KEYS:
+                    value = _unobscure(value)
+                values[key] = value
     return values
 
 
@@ -219,7 +252,10 @@ def set_env_values(values):
         with open(ENV_FILE, encoding="utf-8") as f:
             lines = f.readlines()
 
-    remaining = dict(values)
+    remaining = {
+        key: (_obscure(value) if key in _OBSCURED_ENV_KEYS else value)
+        for key, value in values.items()
+    }
     for i, line in enumerate(lines):
         stripped = line.strip()
         if not stripped or stripped.startswith("#") or "=" not in stripped:
@@ -288,7 +324,7 @@ def _reload_env():
     )
 
     MAX_POSITIONS_PER_COMPANY = int(
-        _env.get("MAX_POSITIONS_PER_COMPANY") or _DEFAULT_MAX_POSITIONS_PER_COMPANY
+        _env.get("MPPC") or _DEFAULT_MAX_POSITIONS_PER_COMPANY
     )
 
     # web_multi only. Both unset by default (no limit) -- opt-in risk
