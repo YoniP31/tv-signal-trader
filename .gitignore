@@ -10,6 +10,9 @@ tv_profile/
 # Generated runtime status file
 status.json
 
+# Generated runtime debug log (rotated backups: app.log.1, .2, .3)
+app.log*
+
 # Nuitka build output (published via GitHub Releases, not tracked in git)
 /dist/
 *.build/

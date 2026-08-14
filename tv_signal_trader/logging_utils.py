@@ -4,23 +4,73 @@ external timing. Each module imports this as `print` (`from . import
 logging_utils` then `print = logging_utils.timestamped_print`, or the
 equivalent `from .logging_utils import timestamped_print as print`),
 shadowing the built-in locally rather than monkey-patching it globally.
+
+Also mirrors every message into a rotating file log (app.log, next to
+.env/status.json) at an appropriate severity level, independent of
+console output -- unaffected by suppressed() below (the regular-user
+.exe build's silent web/web_multi), and identical in both .exe variants.
+This is what "help me debug in case of an error" actually needs: a
+persistent, leveled record that survives after the console scrolls away
+or, for the user build, was never shown at all.
 """
 
 import builtins
 import contextlib
 import datetime
+import logging
+import logging.handlers
+import os
+
+from . import config
 
 _suppressed = False
+
+logging.addLevelName(logging.WARNING, "WARN")
+
+_FORMATTER = logging.Formatter(
+    fmt="%(asctime)s %(levelname)-5s %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+)
+
+_logger = logging.getLogger("tv_signal_trader")
+_logger.setLevel(logging.INFO)
+_logger.propagate = False
+
+
+def _configure_file_handler(log_path):
+    """(Re)points the file logger at `log_path` -- called once below with
+    the real app.log location, and by the test suite (tests/__init__.py)
+    to redirect it to a throwaway temp file instead, since running the
+    tests exercises plenty of real (non-mocked) print() calls that would
+    otherwise clutter the real app.log next to the repo's .env/status.json.
+    """
+    for handler in list(_logger.handlers):
+        _logger.removeHandler(handler)
+        handler.close()
+    handler = logging.handlers.RotatingFileHandler(
+        log_path, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+    )
+    handler.setFormatter(_FORMATTER)
+    _logger.addHandler(handler)
+    return handler
+
+
+_configure_file_handler(os.path.join(config.APP_DIR, "app.log"))
+_logger.info(
+    "=== Session started (PID %d, build=%s) ===",
+    os.getpid(), "admin" if config.IS_ADMIN_BUILD else "user",
+)
 
 
 @contextlib.contextmanager
 def suppressed():
-    """Silences every timestamped_print() call (across every module that
-    imports it as `print`) for the duration of the `with` block -- used by
-    cli.py to hide the regular-user build's web/web_multi console output
-    (see config.IS_ADMIN_BUILD) without threading a flag through every
-    print call site. Not reentrant-safe across threads, but this app only
-    ever has one thread driving the trading loop at a time."""
+    """Silences every timestamped_print() call's *console* output (across
+    every module that imports it as `print`) for the duration of the
+    `with` block -- used by cli.py to hide the regular-user build's
+    web/web_multi console output (see config.IS_ADMIN_BUILD) without
+    threading a flag through every print call site. The file log (above)
+    keeps recording regardless -- see timestamped_print. Not reentrant-
+    safe across threads, but this app only ever has one thread driving the
+    trading loop at a time."""
     global _suppressed
     previous = _suppressed
     _suppressed = True
@@ -30,7 +80,50 @@ def suppressed():
         _suppressed = previous
 
 
+# Recognized severity markers already used throughout the codebase's print
+# calls (e.g. print(f"  [WARN] ...")) -- stripped from the logged message
+# since the log line's own level field already says the same thing, rather
+# than repeating it. Checked in order since '[FAIL]' also happens to start
+# with the same bracket style as '[WARN]'.
+_LEVEL_MARKERS = (
+    ("[FAIL] ", logging.ERROR),
+    ("[WARN] ", logging.WARNING),
+    ("WARNING: ", logging.WARNING),
+)
+
+
+def _log_to_file(args):
+    if not args:
+        return
+    # Mirrors builtins.print's default sep=' ' joining -- no call site in
+    # this codebase passes a custom sep/end, so that's the only case worth
+    # handling.
+    text = " ".join(str(a) for a in args).lstrip("\n").strip()
+    if not text:
+        return
+    for marker, level in _LEVEL_MARKERS:
+        if text.startswith(marker):
+            _logger.log(level, text[len(marker):])
+            return
+    _logger.info(text)
+
+
+def log_exception(message):
+    """Logs `message` at ERROR level with the currently-handled exception's
+    full traceback attached -- call this from inside an `except` block.
+    Console output (traceback.print_exc(), a short [FAIL] summary line) is
+    separate and unaffected; this is what actually lands in app.log for
+    later debugging, since traceback.print_exc() alone writes straight to
+    stderr and never reaches the log file."""
+    _logger.error(message, exc_info=True)
+
+
 def timestamped_print(*args, **kwargs):
+    # Always logs to app.log, regardless of suppressed() below -- unlike
+    # console output, the file log must stay complete in both the admin
+    # and regular-user .exe builds.
+    _log_to_file(args)
+
     if _suppressed:
         return
     # A leading "\n" in the first arg is a deliberate blank-line separator

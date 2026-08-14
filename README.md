@@ -93,9 +93,23 @@ Refreshed on startup/shutdown, whenever `web` touches something worth recording,
 
 Every repeated/idle wait in the codebase — the background `LoginMonitor` heartbeat, waiting for an open position to close, and waiting for a locked/unavailable rotation to free up — draws a fresh random duration from a range each time, rather than sleeping a fixed interval. This is deliberate: ticking at a perfectly regular cadence for hours or days is exactly the kind of timing signature that makes automated usage easier to spot, so these are jittered instead. The ranges are hardcoded in `config.py` (`HEARTBEAT_POLL_RANGE`, `POSITION_POLL_RANGE`, `PORTFOLIO_RETRY_RANGE`) rather than `.env`-configurable, since they exist purely for this reason rather than being something to tune per deployment. Short, bounded UI-confirmation loops (waiting a few seconds for a tab or connection to confirm) are left alone — they're brief, active-action ticks, not long-running idle polling.
 
-### 8. Timestamped console output
+### 8. Timestamped console output, and `app.log`
 
 Every `print()` in the app (except the interactive first-run setup wizard, which is a one-time prompt flow rather than an ongoing log) is prefixed with a `[HH:MM:SS]` timestamp (local machine time), via [tv_signal_trader/logging_utils.py](tv_signal_trader/logging_utils.py) — each module imports `timestamped_print` in place of the built-in `print`, so no individual print call needed to change. Useful for a long-running unattended session's console/log capture, where otherwise there's no way to tell when something happened without cross-referencing the system clock.
+
+Every one of those calls is also mirrored into `app.log` (next to `.env`/`status.json`), cleaned up and leveled rather than a raw copy of the console: `[WARN]`/`[FAIL]`/`WARNING:`-prefixed messages are logged as `WARN`/`ERROR` (with the prefix stripped, since the level field already says the same thing) and everything else as `INFO`, with the terminal-only blank-line spacing dropped. Rotates at 5MB, keeping 3 backups (`app.log.1`, `.2`, `.3`), so an unattended multi-day run can't grow it unbounded. Unlike console output, this **isn't** affected by the regular-user `.exe` build's silent `web`/`web_multi` (see "Building a standalone .exe" below) — the file log stays complete in both variants, since it's meant for debugging after the fact, not live viewing. A fatal, loop-ending exception is also logged here with its full traceback (`logging_utils.log_exception`) — the console only ever shows the short `[FAIL] Error: ...` summary, so `app.log` is the only place the actual traceback survives.
+
+Example:
+
+```
+2026-08-14 13:48:20 INFO  === Session started (PID 41822, build=admin) ===
+2026-08-14 13:48:25 INFO  [WEB_MULTI] Starting automatic trading loop (Ctrl+C to stop)...
+2026-08-14 13:48:55 WARN  'Apex Trader Funding / APEX1871970000006' has an unreported/stale open trade but its last bracket order couldn't be found - reporting Trade Not Taken.
+2026-08-14 13:52:41 ERROR Unhandled exception in trading loop
+Traceback (most recent call last):
+  ...
+selenium.common.exceptions.WebDriverException: unknown error: session deleted because of page crash
+```
 
 ### 9. Interactive command loop
 

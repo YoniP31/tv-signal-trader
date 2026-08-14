@@ -190,6 +190,7 @@ def _run_test_menu(driver, tv_tab, hide_tg_window=None):
             handler()
         except Exception as exc:
             print(f"  [FAIL] Test command raised: {exc!r}")
+            logging_utils.log_exception(f"Test command '{cmd}' raised an exception")
 
 
 def main():

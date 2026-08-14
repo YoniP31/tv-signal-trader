@@ -23,6 +23,7 @@ import time
 
 from . import config
 from . import humanize
+from . import logging_utils
 from . import signal_source
 from . import status
 from . import trading
@@ -895,6 +896,7 @@ def run_web_loop_multi(driver, max_positions_per_company=None, command_name="web
                        last_error=str(e), last_error_at=status.timestamp())
         import traceback
         traceback.print_exc()
+        logging_utils.log_exception("Unhandled exception in trading loop")
     finally:
         try:
             driver.switch_to.window(tv_tab)
