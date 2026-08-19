@@ -122,8 +122,8 @@ def _ensure_tradovate_connection(driver, company, connected_company):
     if company == connected_company and trading.is_tradovate_connected(driver):
         return connected_company
     if trading.is_tradovate_connected(driver):
-        trading.disconnect_tradovate(driver)
-    if not trading.connect_tradovate(driver, account['username'], account['password']):
+        trading.disconnect_tradovate(driver, company=connected_company)
+    if not trading.connect_tradovate(driver, account['username'], account['password'], company=company):
         return None
     return company
 

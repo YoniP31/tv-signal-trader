@@ -66,8 +66,8 @@ def sweep_liquidated_accounts(driver, web_tab, tv_tab, connected_company, extern
         driver.switch_to.window(tv_tab)
         if company != connected_company or not trading.is_tradovate_connected(driver):
             if trading.is_tradovate_connected(driver):
-                trading.disconnect_tradovate(driver)
-            if not trading.connect_tradovate(driver, account['username'], account['password']):
+                trading.disconnect_tradovate(driver, company=connected_company)
+            if not trading.connect_tradovate(driver, account['username'], account['password'], company=company):
                 print(f"  [WARN] Could not connect to Tradovate for '{company}' - skipping sweep for it.")
                 connected_company = None
                 driver.switch_to.window(web_tab)

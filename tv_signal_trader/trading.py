@@ -39,14 +39,18 @@ def is_tradovate_connected(driver):
     Returns True/False -- the button's absence is itself a reliable "not
     connected" signal here, not an error, so unlike other checks in this
     module this doesn't return None for "couldn't determine".
+
+    Deliberately silent -- this is a low-level primitive called very
+    often, including inside polling loops (see connect_tradovate/
+    disconnect_tradovate), so printing on every single call would flood
+    the log with "Broker tab status: ..." noise. Callers narrate the
+    meaningful state transitions themselves instead.
     """
     try:
         status_el = driver.find_element(By.CSS_SELECTOR, '[data-qa-id="paper_trading"] [data-status]')
     except Exception:
-        print("  Broker tab not found (not connected)")
         return False
     status = status_el.get_attribute("data-status")
-    print(f"  Broker tab status: '{status}'")
     return status == "connected"
 
 
@@ -99,24 +103,30 @@ def _submit_tradovate_login(driver, username, password):
     return False
 
 
-def connect_tradovate(driver, username, password, timeout=15):
+def connect_tradovate(driver, username, password, company=None, timeout=15):
     """Opens the broker-connection flow, logs into Tradovate with the given
     credentials, and confirms the connection actually took.
 
     Takes credentials as plain arguments rather than reading them from
     config itself -- how they get stored (multiple accounts, etc.) isn't
     decided yet, so this stays agnostic to that and just uses whatever the
-    caller hands it.
+    caller hands it. `company` is purely for the narrative prints below
+    (e.g. "Connecting to Apex Trader Funding Tradovate account...") -- pass
+    it whenever the caller has it, since otherwise a multi-step
+    disconnect/reconnect sequence reads as an opaque wall of low-level DOM
+    polling with no indication of what's actually being attempted or why.
 
     Deliberately does not touch the broker-selection dialog's Live/Demo
     toggle -- picking the wrong one could connect a different account/mode
     than intended, so that choice is left at whatever TradingView already
     has pre-selected (its own remembered state) rather than guessed at here.
     """
+    label = f"{company} Tradovate account" if company else "Tradovate account"
     if is_tradovate_connected(driver):
-        print("  Already connected to Tradovate [OK]")
+        print(f"  Already connected to the {label} [OK]")
         return True
 
+    print(f"  Connecting to the {label}...")
     tv_tab = driver.current_window_handle
     tabs_before = set(driver.window_handles)
 
@@ -149,7 +159,6 @@ def connect_tradovate(driver, username, password, timeout=15):
         return False
 
     # Clicking Connect opens Tradovate's own login page in a new tab.
-    print("  Waiting for the Tradovate login tab...")
     login_tab = _wait_for_new_tab(driver, tabs_before, timeout=10)
     if login_tab is None:
         print("  FAILED: Tradovate login tab never opened.")
@@ -158,6 +167,7 @@ def connect_tradovate(driver, username, password, timeout=15):
     driver.switch_to.window(login_tab)
     humanize.long_pause(1.0, 2.0)
 
+    print("  Entering Tradovate login credentials...")
     if not _submit_tradovate_login(driver, username, password):
         print("  FAILED: could not submit Tradovate login form.")
         try:
@@ -169,7 +179,6 @@ def connect_tradovate(driver, username, password, timeout=15):
     # On success the login tab closes itself and focus is expected to
     # return to TradingView -- but that's not guaranteed, so wait for it to
     # actually close and switch back explicitly rather than assume it did.
-    print("  Waiting for the login tab to close...")
     if not _wait_for_tab_to_close(driver, login_tab, timeout=15):
         print("  FAILED: Tradovate login tab never closed - login may have failed.")
         try:
@@ -182,7 +191,8 @@ def connect_tradovate(driver, username, password, timeout=15):
     humanize.long_pause(1.0, 2.0)
 
     # The connect flow may take a moment to reflect in the UI, so poll
-    # rather than assume it worked immediately.
+    # rather than assume it worked immediately -- silently (see
+    # is_tradovate_connected); only the final outcome is worth a line.
     elapsed = 0
     while elapsed < timeout:
         if is_tradovate_connected(driver):
@@ -194,13 +204,17 @@ def connect_tradovate(driver, username, password, timeout=15):
     return False
 
 
-def disconnect_tradovate(driver, timeout=15):
+def disconnect_tradovate(driver, company=None, timeout=15):
     """Logs out of the currently connected Tradovate broker via the
-    trade-dropdown menu's 'Log out' item."""
+    trade-dropdown menu's 'Log out' item. `company` is purely for the
+    narrative prints, same as connect_tradovate -- pass whichever company
+    the caller believes is currently connected, if known."""
+    label = f"{company} Tradovate account" if company else "Tradovate account"
     if not is_tradovate_connected(driver):
-        print("  Already disconnected from Tradovate [OK]")
+        print(f"  Already disconnected from the {label} [OK]")
         return True
 
+    print(f"  Disconnecting from the {label}...")
     try:
         dropdown_button = driver.find_element(By.CSS_SELECTOR, '[data-qa-id="trade-dropdown-button"]')
     except Exception:

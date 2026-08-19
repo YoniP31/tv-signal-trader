@@ -55,8 +55,8 @@ def _run_test_menu(driver, tv_tab, hide_tg_window=None):
         driver.switch_to.window(tv_tab)
         # Uses the sole configured account -- see signal_source._pick_tradovate_account.
         if len(config.TRADOVATE_ACCOUNTS) == 1:
-            account = next(iter(config.TRADOVATE_ACCOUNTS.values()))
-            trading.connect_tradovate(driver, account['username'], account['password'])
+            company, account = next(iter(config.TRADOVATE_ACCOUNTS.items()))
+            trading.connect_tradovate(driver, account['username'], account['password'], company=company)
         else:
             print(f"  [FAIL] {len(config.TRADOVATE_ACCOUNTS)} accounts configured, "
                   "need exactly 1 for this test command.")
