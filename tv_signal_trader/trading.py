@@ -564,18 +564,32 @@ def _ensure_broker_panel_open(driver):
     return toggle.get_attribute("aria-label") != "Open panel"
 
 
-def click_orders_tab(driver):
+def click_orders_tab(driver, attempts=5):
     """Opens the broker panel if it's collapsed, then clicks the 'Orders'
-    tab (a stable element id, not text-matched) so its table is rendered."""
+    tab (a stable element id, not text-matched) so its table is rendered.
+
+    Retries briefly rather than giving up on the first miss: right after an
+    order is placed, Tradovate pushes a live UI update to the broker panel
+    (the new position/working orders appearing), which can leave '#orders'
+    transiently not found for a moment even though the panel is genuinely
+    open -- a plain re-render, not a real failure. On a slow/high-latency
+    machine that window is wide enough to matter (caught live: consistently
+    failed the post-trade verification step on a slower VPS, a single
+    find_element with no retry losing the race every time, while the exact
+    same code never hit it on a faster machine).
+    """
     if not _ensure_broker_panel_open(driver):
         return False
-    try:
-        driver.find_element(By.ID, "orders").click()
-    except Exception:
-        print("  Orders tab not found")
-        return False
-    humanize.pause(0.5, 1.0)
-    return True
+    for attempt in range(attempts):
+        try:
+            driver.find_element(By.ID, "orders").click()
+            humanize.pause(0.5, 1.0)
+            return True
+        except Exception:
+            if attempt < attempts - 1:
+                humanize.pause(0.5, 1.0)
+    print("  Orders tab not found")
+    return False
 
 
 def click_account_summary_tab(driver):
