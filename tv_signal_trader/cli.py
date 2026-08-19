@@ -221,56 +221,62 @@ def _run_add_accounts(driver, tv_tab, hide_tg_window=None):
     Never creates a duplicate company or portfolio: an existing company
     tab is reused rather than re-created, and any account name already
     present as a portfolio for that company is skipped.
+
+    Runs under humanize.fast_mode() -- this only touches TradingGenerator,
+    never TradingView/Tradovate, so there's no anti-bot reason to pace
+    every click/keystroke at human speed the way the actual trading paths
+    deliberately do.
     """
-    web_tab = tg.open_tab(driver, tv_tab, hide_window=hide_tg_window)
-    driver.switch_to.window(web_tab)
-    if not tg.ensure_logged_in(driver):
-        print("  [FAIL] Not logged in to TradingGenerator - log in manually and try again.")
-        return
-
-    company = _choose_company("Select a company to add accounts to")
-
-    if company in tg.list_companies(driver):
-        print(f"  '{company}' already exists in TradingGenerator - using it.")
-        tg.select_company(driver, company)
-    else:
-        print(f"  '{company}' doesn't exist yet - creating it...")
-        if not tg.add_company(driver, company):
-            print(f"  [FAIL] Could not create company '{company}' - aborting.")
+    with humanize.fast_mode():
+        web_tab = tg.open_tab(driver, tv_tab, hide_window=hide_tg_window)
+        driver.switch_to.window(web_tab)
+        if not tg.ensure_logged_in(driver):
+            print("  [FAIL] Not logged in to TradingGenerator - log in manually and try again.")
             return
 
-    print(f"\nReading account names from '{ACCOUNTS_TO_ADD_FILE}'")
-    print("  One account name per line, blank lines are ignored.")
-    if not os.path.exists(ACCOUNTS_TO_ADD_FILE):
-        print(f"  [FAIL] File not found. Create '{ACCOUNTS_TO_ADD_FILE}' with the account "
-              "names (one per line) and run 'add_accounts' again.")
-        return
-    with open(ACCOUNTS_TO_ADD_FILE, encoding="utf-8") as f:
-        names = [line.strip() for line in f if line.strip()]
-    if not names:
-        print(f"  [FAIL] '{ACCOUNTS_TO_ADD_FILE}' is empty - nothing to add.")
-        return
-    print(f"  Found {len(names)} account name(s).")
+        company = _choose_company("Select a company to add accounts to")
 
-    type_raw = input("  Account type for this batch - live or eval [live]: ").strip().lower()
-    account_type = 'eval' if type_raw in ('e', 'eval') else 'live'
-
-    existing_portfolios = set(tg.list_portfolios(driver))
-    added = skipped = failed = 0
-    for name in names:
-        if name in existing_portfolios:
-            print(f"  '{name}' already exists for '{company}' - skipping.")
-            skipped += 1
-            continue
-        if tg.add_portfolio(driver, name, account_type=account_type):
-            existing_portfolios.add(name)
-            added += 1
+        if company in tg.list_companies(driver):
+            print(f"  '{company}' already exists in TradingGenerator - using it.")
+            tg.select_company(driver, company)
         else:
-            print(f"  [FAIL] Could not add '{name}'.")
-            failed += 1
+            print(f"  '{company}' doesn't exist yet - creating it...")
+            if not tg.add_company(driver, company):
+                print(f"  [FAIL] Could not create company '{company}' - aborting.")
+                return
 
-    print(f"\n[ADD ACCOUNTS] '{company}': added {added}, skipped {skipped} (already existed), "
-          f"failed {failed}, out of {len(names)} total.")
+        print(f"\nReading account names from '{ACCOUNTS_TO_ADD_FILE}'")
+        print("  One account name per line, blank lines are ignored.")
+        if not os.path.exists(ACCOUNTS_TO_ADD_FILE):
+            print(f"  [FAIL] File not found. Create '{ACCOUNTS_TO_ADD_FILE}' with the account "
+                  "names (one per line) and run 'add_accounts' again.")
+            return
+        with open(ACCOUNTS_TO_ADD_FILE, encoding="utf-8") as f:
+            names = [line.strip() for line in f if line.strip()]
+        if not names:
+            print(f"  [FAIL] '{ACCOUNTS_TO_ADD_FILE}' is empty - nothing to add.")
+            return
+        print(f"  Found {len(names)} account name(s).")
+
+        type_raw = input("  Account type for this batch - live or eval [live]: ").strip().lower()
+        account_type = 'eval' if type_raw in ('e', 'eval') else 'live'
+
+        existing_portfolios = set(tg.list_portfolios(driver))
+        added = skipped = failed = 0
+        for name in names:
+            if name in existing_portfolios:
+                print(f"  '{name}' already exists for '{company}' - skipping.")
+                skipped += 1
+                continue
+            if tg.add_portfolio(driver, name, account_type=account_type):
+                existing_portfolios.add(name)
+                added += 1
+            else:
+                print(f"  [FAIL] Could not add '{name}'.")
+                failed += 1
+
+        print(f"\n[ADD ACCOUNTS] '{company}': added {added}, skipped {skipped} (already existed), "
+              f"failed {failed}, out of {len(names)} total.")
 
 
 def main():
