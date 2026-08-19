@@ -113,6 +113,26 @@ class AccountsFileTests(_AddAccountsTestCase):
         names = [call.args[1] for call in add_portfolio_mock.call_args_list]
         self.assertEqual(names, ["APEX001", "APEX002"])
 
+    def test_comment_lines_are_ignored(self):
+        with open(self.accounts_path, "w", encoding="utf-8") as f:
+            f.write("# one account name per line\nAPEX001\n#APEX999 - not a real account\nAPEX002\n")
+        add_portfolio_mock = self._run_with_company_selected(extra_inputs=["live"])
+        names = [call.args[1] for call in add_portfolio_mock.call_args_list]
+        self.assertEqual(names, ["APEX001", "APEX002"])
+
+    def test_a_leading_hash_after_whitespace_is_still_a_comment(self):
+        with open(self.accounts_path, "w", encoding="utf-8") as f:
+            f.write("  # indented comment\nAPEX001\n")
+        add_portfolio_mock = self._run_with_company_selected(extra_inputs=["live"])
+        names = [call.args[1] for call in add_portfolio_mock.call_args_list]
+        self.assertEqual(names, ["APEX001"])
+
+    def test_a_file_of_only_comments_is_treated_as_empty(self):
+        with open(self.accounts_path, "w", encoding="utf-8") as f:
+            f.write("# nothing here yet\n")
+        add_portfolio_mock = self._run_with_company_selected()
+        add_portfolio_mock.assert_not_called()
+
     def test_already_existing_names_are_skipped_not_recreated(self):
         self._write_accounts("APEX001", "APEX002")
         add_portfolio_mock = self._run_with_company_selected(

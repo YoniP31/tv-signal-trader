@@ -246,13 +246,17 @@ def _run_add_accounts(driver, tv_tab, hide_tg_window=None):
                 return
 
         print(f"\nReading account names from '{ACCOUNTS_TO_ADD_FILE}'")
-        print("  One account name per line, blank lines are ignored.")
+        print("  One account name per line; blank lines and lines starting with # are ignored.")
         if not os.path.exists(ACCOUNTS_TO_ADD_FILE):
             print(f"  [FAIL] File not found. Create '{ACCOUNTS_TO_ADD_FILE}' with the account "
-                  "names (one per line) and run 'add_accounts' again.")
+                  "names (one per line) and run 'add_accounts' again. See docs/accounts_to_add.txt "
+                  "for an example.")
             return
         with open(ACCOUNTS_TO_ADD_FILE, encoding="utf-8") as f:
-            names = [line.strip() for line in f if line.strip()]
+            names = [
+                line.strip() for line in f
+                if line.strip() and not line.strip().startswith("#")
+            ]
         if not names:
             print(f"  [FAIL] '{ACCOUNTS_TO_ADD_FILE}' is empty - nothing to add.")
             return

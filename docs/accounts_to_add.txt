@@ -1,0 +1,14 @@
+# tv-signal-trader "add_accounts" command input template.
+#
+# Copy/rename this file to "accounts_to_add.txt" and put it next to
+# tv-signal-trader.exe (or in the repo root when running from source) --
+# same location as .env. The 'add_accounts' command reads it, prints the
+# exact path it read from, and creates one TradingGenerator portfolio per
+# name for whichever company you pick when the command runs.
+#
+# One account name per line. Blank lines and lines starting with # (like
+# this one) are ignored -- the account name examples below are just
+# placeholders, replace them with your own before running the command.
+APEX1871970000001
+APEX1871970000002
+APEX1871970000003

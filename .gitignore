@@ -32,6 +32,11 @@ env/
 *.env.local
 !docs/.env
 
+# Your own "add_accounts" command input -- see docs/accounts_to_add.txt
+# for the committed template
+accounts_to_add.txt
+!docs/accounts_to_add.txt
+
 # OS cruft
 .DS_Store
 Thumbs.db
