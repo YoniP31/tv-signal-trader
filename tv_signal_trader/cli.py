@@ -289,6 +289,8 @@ def main():
             cmd = input("> ").strip().lower()
             with state.session.driver_lock:
                 if cmd == "web":
+                    if not setup_wizard.check_env_validity():
+                        continue
                     # Same engine as 'web_multi' (see multi_signal_source.py),
                     # just capped at one open position per company -- combined
                     # with the engine's existing "only one company engaged at
@@ -299,9 +301,13 @@ def main():
                         max_positions_per_company=1, command_name="web", hide_tg_window=hide_tg_window
                     )
                 elif cmd == "web_multi":
+                    if not setup_wizard.check_env_validity():
+                        continue
                     hide_tg_window = _resolve_hide_tg_window()
                     _run_trading_loop(hide_tg_window=hide_tg_window)
                 elif cmd == "test" and config.IS_ADMIN_BUILD:
+                    if not setup_wizard.check_env_validity():
+                        continue
                     hide_tg_window = _ask_hide_tg_window()
                     _run_test_menu(driver, tv_tab, hide_tg_window=hide_tg_window)
                 elif cmd == "setup":

@@ -12,6 +12,64 @@ def ensure_configured():
         _add_tradovate_account()
 
 
+def check_env_validity():
+    """Called by cli.py before running a command that depends on .env
+    (web/web_multi/test) -- validates every setting via config.validate_env()
+    and, if anything's malformed, walks through fixing each one right here
+    in the terminal rather than leaving the user to go hunt down a typo in
+    a text editor. Returns True if it's safe to proceed (nothing wrong, or
+    the user chose to continue anyway), False if the command should be
+    aborted (the user backed out without fixing everything).
+    """
+    problems = config.validate_env()
+    if not problems:
+        return True
+
+    print(f"\n[WARN] Found {len(problems)} problem(s) in .env:")
+    for key, raw, message, example in problems:
+        current = f' (currently "{raw}")' if raw else ""
+        print(f"  - {key}{current}: {message}")
+
+    print("\nLet's fix these now (press Enter to leave a value as-is and skip it).")
+    unresolved = []
+    for key, raw, message, example in problems:
+        if _fix_one_env_problem(key, raw, message, example):
+            continue
+        unresolved.append(key)
+
+    if not unresolved:
+        print("[OK] .env is valid now.\n")
+        return True
+
+    print(f"\n[WARN] Still unresolved: {', '.join(unresolved)}.")
+    choice = input("Continue anyway using built-in defaults for those? [y/N]: ").strip().lower()
+    print()
+    return choice in ("y", "yes")
+
+
+def _fix_one_env_problem(key, raw, message, example):
+    """Prompts for a replacement value for a single invalid .env entry,
+    re-validating each attempt before saving so a second typo doesn't slip
+    through unnoticed. Returns True once a valid value is saved, False if
+    the user presses Enter to skip it instead."""
+    current = f' (currently "{raw}")' if raw else ""
+    print(f"\n{key}{current}")
+    print(f"  Problem: {message}")
+    print(f"  Example: {example}")
+    while True:
+        new_raw = input(f"  New value for {key} (Enter to skip): ").strip()
+        if not new_raw:
+            return False
+        config.set_env_values({key: new_raw})
+        # Re-check just this one key -- easier than re-running the whole
+        # batch, and set_env_values() already reloaded config._env.
+        still_broken = next((p for p in config.validate_env() if p[0] == key), None)
+        if still_broken is None:
+            print(f"  [OK] {key} updated.")
+            return True
+        print(f"  [FAIL] Still invalid: {still_broken[2]}")
+
+
 def run_setup():
     """Called from the 'setup' command. Walks through every value, offering
     to keep the current one, then lets you add/update Tradovate accounts."""

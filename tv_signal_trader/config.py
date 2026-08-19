@@ -154,6 +154,138 @@ def _parse_time(raw):
         return None
 
 
+def _safe_float(raw, default):
+    """float(raw), falling back to `default` if raw is missing/blank/not a
+    valid number -- so a malformed .env value degrades to "use the
+    default" instead of crashing the whole app at import time.
+    validate_env() below is what actually surfaces the problem to the
+    user before a command runs; this is just the fallback for whatever
+    slips through anyway (e.g. .env hand-edited while the app is running).
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _safe_positive_int(raw, default):
+    raw = (raw or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _check_time(raw):
+    if _parse_time(raw) is None:
+        raise ValueError('must be a 24-hour "HH:MM" time, e.g. "09:30"')
+
+
+def _check_float(raw):
+    try:
+        float(raw)
+    except ValueError:
+        raise ValueError('must be a plain number, e.g. "500" or "23000.5"')
+
+
+def _check_positive_int(raw):
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError('must be a whole number, e.g. "3"')
+    if value <= 0:
+        raise ValueError('must be greater than 0, e.g. "3"')
+
+
+def _balance_tier_field_specs():
+    specs = []
+    for size, default_min in _DEFAULT_ACCOUNT_TIER_MIN.items():
+        prefix = f"ACCOUNT_{size // 1000}K"
+        specs.append((f"{prefix}_MIN_BALANCE", _check_float, f'a dollar amount, e.g. "{default_min:g}"'))
+        for account_type, defaults in _DEFAULT_ACCOUNT_TIER_MAX.items():
+            specs.append((
+                f"{prefix}_MAX_BALANCE_{account_type}", _check_float,
+                f'a dollar amount, e.g. "{defaults[size]:g}"',
+            ))
+    return specs
+
+
+# Every .env setting this app parses into something other than a plain
+# string, paired with a validator (raises ValueError with a human-readable
+# reason on a malformed *non-blank* value) and a "here's what a valid one
+# looks like" example -- the single source of truth for validate_env()
+# below. TRADINGGENERATOR_USERNAME/PASSWORD and the per-company Tradovate
+# credentials aren't included: those are plain strings with no format to
+# get wrong, just present-or-not (handled by setup_wizard instead).
+_ENV_FIELD_SPECS = _balance_tier_field_specs() + [
+    ("SESSION_START_TIME", _check_time, 'a 24-hour "HH:MM" time, e.g. "09:00"'),
+    ("SESSION_END_TIME", _check_time, 'a 24-hour "HH:MM" time, e.g. "17:00"'),
+    ("NO_TRADE_START_TIME", _check_time, 'a 24-hour "HH:MM" time, e.g. "12:00"'),
+    ("NO_TRADE_END_TIME", _check_time, 'a 24-hour "HH:MM" time, e.g. "13:00"'),
+    ("TP_CAP_BUFFER_MIN", _check_float, f'a dollar amount, e.g. "{_DEFAULT_TP_CAP_BUFFER_RANGE[0]:g}"'),
+    ("TP_CAP_BUFFER_MAX", _check_float, f'a dollar amount, e.g. "{_DEFAULT_TP_CAP_BUFFER_RANGE[1]:g}"'),
+    ("MPPC", _check_positive_int, f'a whole number, e.g. "{_DEFAULT_MAX_POSITIONS_PER_COMPANY}"'),
+    ("DAILY_PROFIT_LIMIT", _check_float, 'a dollar amount, e.g. "500"'),
+    ("DAILY_LOSS_LIMIT", _check_float, 'a dollar amount, e.g. "300"'),
+    ("DAILY_PNL_CAP_BUFFER_MIN", _check_float, f'a dollar amount, e.g. "{_DEFAULT_DAILY_PNL_CAP_BUFFER_RANGE[0]:g}"'),
+    ("DAILY_PNL_CAP_BUFFER_MAX", _check_float, f'a dollar amount, e.g. "{_DEFAULT_DAILY_PNL_CAP_BUFFER_RANGE[1]:g}"'),
+]
+
+# (start_key, end_key, label) -- a window needs both ends set to mean
+# anything (see session_window_status/in_no_trade_window); having just one
+# set silently disables the whole window rather than erroring, which is a
+# much more surprising failure mode than a format typo, so validate_env()
+# flags it too.
+_WINDOW_FIELD_PAIRS = (
+    ("SESSION_START_TIME", "SESSION_END_TIME", "the trading session window"),
+    ("NO_TRADE_START_TIME", "NO_TRADE_END_TIME", "the mid-session no-trade window"),
+)
+
+
+def validate_env():
+    """Checks every .env setting this app understands against its expected
+    format -- called by setup_wizard.check_env_validity() before running a
+    command that depends on them, so a malformed entry surfaces as a clear
+    message + a valid example instead of either crashing or silently
+    falling back to a default with no explanation (see _safe_float/
+    _safe_positive_int above).
+
+    Blank is always valid -- it means "use the built-in default", or
+    "feature disabled" for the opt-in settings -- only a *present but
+    malformed* value is reported. Returns a list of (env_key, raw_value,
+    problem_message, example) tuples, empty if everything checks out.
+    """
+    problems = []
+    for key, check, example in _ENV_FIELD_SPECS:
+        raw = _env.get(key, "").strip()
+        if not raw:
+            continue
+        try:
+            check(raw)
+        except ValueError as exc:
+            problems.append((key, raw, str(exc), example))
+
+    for start_key, end_key, label in _WINDOW_FIELD_PAIRS:
+        start_raw = _env.get(start_key, "").strip()
+        end_raw = _env.get(end_key, "").strip()
+        if bool(start_raw) != bool(end_raw):
+            missing_key = end_key if start_raw else start_key
+            set_key = start_key if start_raw else end_key
+            problems.append((
+                missing_key, "",
+                f"must also be set for {label} to take effect ({set_key} is set, but "
+                f"{missing_key} isn't, so the window is currently being ignored entirely)",
+                f'a 24-hour "HH:MM" time, matching {set_key}',
+            ))
+    return problems
+
+
 def now_in_israel():
     return datetime.datetime.now(SESSION_TIMEZONE)
 
@@ -298,15 +430,16 @@ def _reload_env():
     ACCOUNT_BALANCE_TIERS = {}
     for size, default_min in _DEFAULT_ACCOUNT_TIER_MIN.items():
         prefix = f"ACCOUNT_{size // 1000}K"
-        # `or default` (not a dict-get default) so a present-but-blank line
-        # in .env -- e.g. a commented-out template value someone uncommented
-        # without filling in -- falls back cleanly instead of `float('')`
-        # raising.
-        min_val = float(_env.get(f"{prefix}_MIN_BALANCE") or default_min)
+        # _safe_float (not a bare float()) so a blank *or malformed* value
+        # in .env -- e.g. a typo'd override -- falls back to the default
+        # cleanly instead of crashing the whole app at import time.
+        # validate_env() is what actually surfaces a malformed value to
+        # the user; this is just the fallback for whatever slips through.
+        min_val = _safe_float(_env.get(f"{prefix}_MIN_BALANCE"), default_min)
         max_by_type = {}
         for account_type, defaults in _DEFAULT_ACCOUNT_TIER_MAX.items():
             default_max = defaults[size]
-            max_by_type[account_type] = float(_env.get(f"{prefix}_MAX_BALANCE_{account_type}") or default_max)
+            max_by_type[account_type] = _safe_float(_env.get(f"{prefix}_MAX_BALANCE_{account_type}"), default_max)
         ACCOUNT_BALANCE_TIERS[size] = {'min': min_val, 'max': max_by_type}
 
     # Unset by default -- no session window means trading is allowed anytime.
@@ -319,27 +452,27 @@ def _reload_env():
 
     default_buffer_min, default_buffer_max = _DEFAULT_TP_CAP_BUFFER_RANGE
     TP_CAP_BUFFER_RANGE = (
-        float(_env.get("TP_CAP_BUFFER_MIN") or default_buffer_min),
-        float(_env.get("TP_CAP_BUFFER_MAX") or default_buffer_max),
+        _safe_float(_env.get("TP_CAP_BUFFER_MIN"), default_buffer_min),
+        _safe_float(_env.get("TP_CAP_BUFFER_MAX"), default_buffer_max),
     )
 
-    MAX_POSITIONS_PER_COMPANY = int(
-        _env.get("MPPC") or _DEFAULT_MAX_POSITIONS_PER_COMPANY
+    MAX_POSITIONS_PER_COMPANY = _safe_positive_int(
+        _env.get("MPPC"), _DEFAULT_MAX_POSITIONS_PER_COMPANY
     )
 
     # web_multi only. Both unset by default (no limit) -- opt-in risk
     # controls, not universal defaults like the balance tiers above.
     # DAILY_LOSS_LIMIT is a positive $ amount (the max acceptable loss),
-    # compared against today's P&L going negative past it.
-    daily_profit_limit_raw = _env.get("DAILY_PROFIT_LIMIT", "").strip()
-    DAILY_PROFIT_LIMIT = float(daily_profit_limit_raw) if daily_profit_limit_raw else None
-    daily_loss_limit_raw = _env.get("DAILY_LOSS_LIMIT", "").strip()
-    DAILY_LOSS_LIMIT = float(daily_loss_limit_raw) if daily_loss_limit_raw else None
+    # compared against today's P&L going negative past it. A malformed
+    # value falls back to None (disabled), same reasoning as elsewhere --
+    # validate_env() is what actually flags it to the user.
+    DAILY_PROFIT_LIMIT = _safe_float(_env.get("DAILY_PROFIT_LIMIT", ""), None)
+    DAILY_LOSS_LIMIT = _safe_float(_env.get("DAILY_LOSS_LIMIT", ""), None)
 
     default_pnl_buffer_min, default_pnl_buffer_max = _DEFAULT_DAILY_PNL_CAP_BUFFER_RANGE
     DAILY_PNL_CAP_BUFFER_RANGE = (
-        float(_env.get("DAILY_PNL_CAP_BUFFER_MIN") or default_pnl_buffer_min),
-        float(_env.get("DAILY_PNL_CAP_BUFFER_MAX") or default_pnl_buffer_max),
+        _safe_float(_env.get("DAILY_PNL_CAP_BUFFER_MIN"), default_pnl_buffer_min),
+        _safe_float(_env.get("DAILY_PNL_CAP_BUFFER_MAX"), default_pnl_buffer_max),
     )
 
 
