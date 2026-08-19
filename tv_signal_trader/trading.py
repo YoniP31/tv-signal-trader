@@ -244,6 +244,39 @@ def disconnect_tradovate(driver, company=None, timeout=15):
     return False
 
 
+def _is_single_account_mode(selector_btn):
+    """The account-selector button (data-qa-id="account-selector") gets an
+    extra class when the login only has one Tradovate sub-account -- in
+    that case it's a plain read-only label, not a real dropdown trigger,
+    so clicking it never opens '[data-qa-id="account-dropdown"]' at all.
+
+    Checked directly up front, rather than inferred from "no dropdown
+    appeared after clicking" -- that can't tell a genuinely single account
+    apart from the dropdown just failing to open for some other reason,
+    same ambiguity this module is already careful about elsewhere (e.g.
+    list_tradovate_accounts returning None, not [], on a failed read).
+
+    The class name itself ("singleAccountButton-<hash>") is TradingView's
+    CSS-module output -- matched as a substring so only the stable
+    "singleAccountButton-" prefix has to hold across builds, not the hash
+    suffix too.
+    """
+    classes = selector_btn.get_attribute("class") or ""
+    return "singleAccountButton-" in classes
+
+
+def _read_single_account_name(selector_btn):
+    """The one account's name when _is_single_account_mode(selector_btn)
+    is True -- read straight from the button's own displayed text (its
+    "accountName-<hash>" span), no dropdown interaction needed at all.
+    Returns None if it can't be read."""
+    try:
+        name_el = selector_btn.find_element(By.CSS_SELECTOR, '[class*="accountName-"]')
+    except Exception:
+        return None
+    return name_el.text.strip() or None
+
+
 def select_tradovate_account(driver, account_name, timeout=45):
     """Selects `account_name` (e.g. "APEX1871970000006") in the broker
     panel's account-selector dropdown -- the specific Tradovate sub-account
@@ -279,6 +312,14 @@ def select_tradovate_account(driver, account_name, timeout=45):
     if account_name in selector_btn.text:
         print(f"  Tradovate account already set to '{account_name}' [OK]")
         return True
+
+    if _is_single_account_mode(selector_btn):
+        # Nothing to pick between -- if the single account here were the
+        # one wanted, the check above would already have returned True.
+        current = _read_single_account_name(selector_btn)
+        print(f"  FAILED: this Tradovate login only has one account "
+              f"('{current or 'unknown'}'), not '{account_name}'.")
+        return False
 
     driver.execute_script("arguments[0].click();", selector_btn)
     humanize.long_pause(0.6, 1.0)
@@ -367,6 +408,12 @@ def list_tradovate_accounts(driver):
     two would treat a transient DOM/timing glitch as grounds to remove
     every single portfolio. Only a *successful* read returns a real list,
     which may legitimately be empty.
+
+    A login with only one sub-account renders the selector as a plain
+    label rather than a real dropdown trigger (see _is_single_account_mode)
+    -- that one account's name is read directly off it without ever
+    trying to open a dropdown, rather than misreading "no dropdown, because
+    there's only one account" as a failed read.
     """
     if not _ensure_broker_panel_open(driver):
         print("  FAILED: could not open the broker panel to list accounts.")
@@ -377,6 +424,13 @@ def list_tradovate_accounts(driver):
     except Exception:
         print("  FAILED: account-selector button not found.")
         return None
+
+    if _is_single_account_mode(selector_btn):
+        name = _read_single_account_name(selector_btn)
+        if name is None:
+            print("  FAILED: could not read the single Tradovate account's name.")
+            return None
+        return [name]
 
     driver.execute_script("arguments[0].click();", selector_btn)
     humanize.long_pause(0.6, 1.0)
