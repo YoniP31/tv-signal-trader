@@ -1,3 +1,5 @@
+import random
+
 from . import config
 from . import status
 from . import trading
@@ -116,6 +118,23 @@ def sweep_liquidated_accounts(driver, web_tab, tv_tab, connected_company, extern
             else:
                 external_open_accounts.discard((company, extra_account))
         driver.switch_to.window(web_tab)
+
+    # Selecting each company in turn above (to read its portfolio tabs)
+    # leaves TradingGenerator parked on whichever one happened to be swept
+    # last -- deterministic, not random. generate_trade() with no hint
+    # (the very first trade of a session, or right after this sweep runs,
+    # before a "next portfolio" hint exists yet) just clicks Generate on
+    # whatever's currently selected, so without this every such trade
+    # would silently land on the same account every time instead of a
+    # random one.
+    driver.switch_to.window(web_tab)
+    candidates = tg.list_all_candidates(driver)
+    if candidates:
+        company, portfolio = random.choice(candidates)
+        tg.select_company(driver, company)
+        tg.select_portfolio(driver, portfolio)
+        print(f"  Randomly selected '{company} / {portfolio}' so the next hint-less trade "
+              "doesn't always land on whichever account the sweep finished on.")
 
     print("[SWEEP] Done.")
     return connected_company

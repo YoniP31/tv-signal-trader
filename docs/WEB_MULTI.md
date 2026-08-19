@@ -114,6 +114,8 @@ The same sweep also goes the other way: any Tradovate sub-account under a compan
 
 **How to test:** manually open a position (e.g. via the `test` command's `buy`/`sell`) on a Tradovate sub-account that has no matching TradingGenerator portfolio, then run `web_multi` and confirm the console shows it being tracked ("has an open position but isn't a TradingGenerator portfolio") and that company doesn't trade until you close that position by hand, at which point the next cycle should log it as no longer holding that company back.
 
+Selecting each company in turn during the sweep (to read its portfolio tabs) would otherwise leave TradingGenerator parked on whichever one happened to be swept last — a deterministic, not random, choice. Since generating a trade with no "next portfolio" hint yet (the very first trade of a session, or right after this sweep runs) just clicks Generate on whatever's currently selected, the sweep finishes by explicitly selecting a random company/portfolio from the current candidate list instead, so that first hint-less trade doesn't silently land on the same account every time.
+
 ## Crash recovery (startup reconciliation)
 
 Every time `web_multi` starts, before it generates any new trade, it checks every configured company/portfolio for a position a *previous* run left behind (e.g. the bot crashed or was closed unexpectedly):
