@@ -123,6 +123,38 @@ class FileLoggingTests(unittest.TestCase):
         # Exactly one log record for this call, not a blank second one.
         self.assertEqual(log.count(" INFO "), 1)
 
+    def test_leading_newline_message_writes_a_real_blank_line_before_it(self):
+        # A leading "\n" is this codebase's own convention for "a new
+        # section starts here" -- app.log should get the same visual
+        # separation the console already gets, not just have the newline
+        # silently stripped.
+        lu.timestamped_print("first line")
+        lu.timestamped_print("\n[SWEEP] Checking for liquidated accounts...")
+        lines = self._read_log().splitlines()
+        sweep_index = next(i for i, line in enumerate(lines) if "[SWEEP]" in line)
+        self.assertEqual(lines[sweep_index - 1], "")
+
+    def test_two_space_indent_is_preserved_as_a_sub_detail(self):
+        lu.timestamped_print("  Connected to Tradovate [OK]")
+        log = self._read_log()
+        self.assertIn("INFO    Connected to Tradovate [OK]", log)
+
+    def test_flush_left_message_is_not_indented(self):
+        lu.timestamped_print("Banner line")
+        log = self._read_log()
+        self.assertIn("INFO  Banner line", log)
+        self.assertNotIn("INFO    Banner line", log)
+
+    def test_deeper_indent_beyond_two_spaces_is_flushed_left(self):
+        # Only the exact 2-space "sub-detail" indent used throughout this
+        # codebase's print() calls is preserved -- there's no 3rd level in
+        # practice, so anything deeper just logs flush-left rather than
+        # inventing a deeper hierarchy app.log has no other use for.
+        lu.timestamped_print("    deeply indented detail")
+        log = self._read_log()
+        self.assertIn("INFO  deeply indented detail", log)
+        self.assertNotIn("INFO      deeply indented detail", log)
+
     def test_file_logging_happens_even_when_console_is_suppressed(self):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):

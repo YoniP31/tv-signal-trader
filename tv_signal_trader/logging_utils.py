@@ -113,20 +113,60 @@ _LEVEL_MARKERS = (
 )
 
 
+def _write_blank_line_to_file():
+    """Writes a literal blank line straight to the file handler's stream,
+    bypassing the formatter (a real log record can't produce a line with
+    no timestamp/level on it) -- using the handler's own lock, so this
+    can't interleave with a concurrent emit() from another thread (the
+    background LoginMonitor thread also logs). Correctly accounted for by
+    RotatingFileHandler's own rollover-size check, which reads the
+    stream's actual position fresh each time rather than tracking a
+    separate byte count."""
+    for handler in _logger.handlers:
+        handler.acquire()
+        try:
+            handler.stream.write("\n")
+            handler.stream.flush()
+        finally:
+            handler.release()
+
+
 def _log_to_file(args):
     if not args:
         return
     # Mirrors builtins.print's default sep=' ' joining -- no call site in
     # this codebase passes a custom sep/end, so that's the only case worth
     # handling.
-    text = " ".join(str(a) for a in args).lstrip("\n").strip()
+    text = " ".join(str(a) for a in args)
     if not text:
         return
+    # A leading "\n" is this codebase's own convention for "a new logical
+    # section starts here" (25 call sites use it: starting the trading
+    # loop, the daily sweep, opening a trade, ...) -- timestamped_print
+    # already turns it into a blank line on the console for exactly this
+    # reason, so app.log gets the same visual segmentation instead of
+    # silently discarding the signal and running every phase together.
+    if text.startswith("\n"):
+        _write_blank_line_to_file()
+        text = text[1:]
+    stripped = text.strip()
+    if not stripped:
+        return
     for marker, level in _LEVEL_MARKERS:
-        if text.startswith(marker):
-            _logger.log(level, text[len(marker):])
+        if stripped.startswith(marker):
+            _logger.log(level, stripped[len(marker):])
             return
-    _logger.info(text)
+    # A leading "  " (and no more than that) on the original message is
+    # this codebase's own convention for "a sub-detail of the banner/
+    # milestone line above", as opposed to an unindented banner line of
+    # its own -- preserved as a single indent level (not the original's
+    # exact depth, which doesn't go any deeper anyway) so app.log keeps
+    # that same at-a-glance hierarchy within a section instead of every
+    # line reading as equally significant.
+    if text.startswith("  ") and not text.startswith("   "):
+        _logger.info("  " + stripped)
+    else:
+        _logger.info(stripped)
 
 
 def log_exception(message):
