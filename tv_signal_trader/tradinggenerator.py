@@ -286,6 +286,86 @@ def remove_portfolio(driver, portfolio):
     return False
 
 
+def add_company(driver, company):
+    """Creates a new company tab in #companiesBar via the '+ Company'
+    button and its modal, then selects it. Always attempts creation --
+    doesn't check list_companies(driver) itself first, since the caller
+    (cli.py's add_accounts command) already needs to do that check anyway
+    to decide whether to call this at all or reuse an existing tab.
+    Returns True once the new tab is confirmed present afterward."""
+    if not _click_visible(driver, "#companiesBar .add-btn-company"):
+        print("  [FAIL] '+ Company' button not found.")
+        return False
+    try:
+        name_input = driver.find_element(By.ID, "companyNameInput")
+    except Exception:
+        print("  [FAIL] Company name field not found.")
+        return False
+    panel.set_field(driver, name_input, company)
+    if not _click_visible(driver, ".btn-confirm-purple"):
+        print("  [FAIL] Could not confirm company creation.")
+        return False
+    humanize.long_pause(1, 2)
+    if company not in list_companies(driver):
+        print(f"  [FAIL] '{company}' doesn't appear in the companies list after creating it.")
+        return False
+    select_company(driver, company)
+    print(f"  Created company '{company}' in TradingGenerator [OK]")
+    return True
+
+
+def _click_add_portfolio_button(driver, attempts=6):
+    """Clicks the single-portfolio '+ Portfolio' button in #portfolioBar.
+    Matched by its own text, not just its 'add-portfolio-btn' class --
+    TradingGenerator has a second button with that exact same class for
+    bulk creation ('+ N Portfolios'), so relying on DOM order alone to
+    pick the right one would be fragile."""
+    for _ in range(attempts):
+        for btn in driver.find_elements(By.CSS_SELECTOR, "#portfolioBar .add-portfolio-btn"):
+            if btn.is_displayed() and btn.text.strip() == "+ Portfolio":
+                btn.click()
+                humanize.long_pause(1, 2)
+                return True
+        humanize.pause(0.4, 0.7)
+    return False
+
+
+def add_portfolio(driver, portfolio, account_type='live'):
+    """Creates a new portfolio tab in #portfolioBar for whichever company
+    is currently selected, via the '+ Portfolio' button and its modal.
+    `account_type` is 'live' (default -- matches the modal's own
+    pre-selected state, so nothing extra is clicked) or 'eval' (clicks the
+    EVAL option before confirming).
+
+    Always attempts creation -- doesn't check list_portfolios(driver)
+    itself first, same reasoning as add_company above: the caller already
+    needs that check to decide whether to call this at all.
+
+    Returns True once the new tab is confirmed present afterward."""
+    if not _click_add_portfolio_button(driver):
+        print("  [FAIL] '+ Portfolio' button not found.")
+        return False
+    try:
+        name_input = driver.find_element(By.ID, "portfolioNameInput")
+    except Exception:
+        print("  [FAIL] Portfolio name field not found.")
+        return False
+    panel.set_field(driver, name_input, portfolio)
+    if account_type == 'eval':
+        if not _click_visible(driver, "#optPaper"):
+            print("  [FAIL] Could not select the EVAL portfolio type.")
+            return False
+    if not _click_visible(driver, ".btn-confirm-green"):
+        print("  [FAIL] Could not confirm portfolio creation.")
+        return False
+    humanize.long_pause(1, 2)
+    if portfolio not in list_portfolios(driver):
+        print(f"  [FAIL] '{portfolio}' doesn't appear in the portfolio list after creating it.")
+        return False
+    print(f"  Created portfolio '{portfolio}' ({account_type.upper()}) [OK]")
+    return True
+
+
 def _read_wrong_account_warning(driver):
     """If TradingGenerator's "wrong account" warning modal is showing (you
     tried to generate a trade for the wrong company/portfolio), returns the

@@ -122,14 +122,19 @@ Running the script drops you into a `>` prompt that accepts:
 | `web`        | Runs the automatic trading loop, one position at a time (Ctrl+C to stop) |
 | `web_multi`  | Runs the same loop, allowing several concurrent positions per company (see above) |
 | `test`       | **Admin build only** — opens a submenu of one-off manual test commands (buy/sell, connect/disconnect Tradovate, reporting a Trade Result, closing a stale Open Trades card, ...) — see "Manual testing" below |
+| `add_accounts` | **Admin build only** — bulk-creates TradingGenerator portfolios (accounts) for one company from a `.txt` file — see "Bulk-adding accounts" below |
 | `setup`      | Re-run setup to change your TradingGenerator credentials or Tradovate accounts |
 | `quit`       | Closes the browser and exits                                         |
 
-The regular-user `.exe` variant (see "Building a standalone .exe" below) only offers `web`/`web_multi`/`setup`/`quit` — no `test` command, TradingGenerator's window is always hidden with no prompt, and `web`/`web_multi` produce no console output.
+The regular-user `.exe` variant (see "Building a standalone .exe" below) only offers `web`/`web_multi`/`setup`/`quit` — no `test`/`add_accounts` commands, TradingGenerator's window is always hidden with no prompt, and `web`/`web_multi` produce no console output.
 
 ### Manual testing — the `test` command, and `tests/`
 
 Typing `test` at the `>` prompt (admin build only) opens a submenu (`buy`, `sell`, `connect_tradovate`, `disconnect_tradovate`, `report_tp`, `report_sl`, `report_not_taken`, `close_open_trade`, `tg_status`, `back`) for exercising one piece at a time against whatever's actually on the page right now, without running the full loop — e.g. to confirm `report_trade_result` clicks the right button, or that `close_open_trade_card` picks the right portfolio's card when several are open at once. Each one prints setup instructions and waits for Enter, so there's time to actually arrange the scenario (select the right portfolio, open the right panel) in the browser first. Implementation: `_run_test_menu` in [tv_signal_trader/cli.py](tv_signal_trader/cli.py).
+
+### Bulk-adding accounts — the `add_accounts` command
+
+Typing `add_accounts` at the `>` prompt (admin build only) logs into TradingGenerator if needed, asks which company (1-8, the same list as `config.PROP_FIRMS`) to add accounts to — reusing its company tab if one already exists rather than creating a duplicate — then reads account names to create as portfolios from `accounts_to_add.txt`, next to `.env` (one name per line, blank lines ignored; the command prints this exact path and format when it runs). Prompts once per run for LIVE or EVAL, applied to every name in that batch. Any name that already exists as a portfolio for the selected company is skipped rather than recreated. Implementation: `_run_add_accounts` in [tv_signal_trader/cli.py](tv_signal_trader/cli.py), `add_company`/`add_portfolio` in [tv_signal_trader/tradinggenerator.py](tv_signal_trader/tradinggenerator.py).
 
 Separately, [tests/](tests/) has mocked, no-browser-needed unit tests: `test_reconciliation.py` simulates the crash-recovery/reporting *decision logic* itself (which DOM observation leads to which action), and `test_logging_utils.py` covers the admin/user build output-suppression mechanism (see "Building a standalone .exe" below). Run with `python -m unittest discover tests -v`. These don't replace the `test` command's live checks against the real page; they exist to catch logic regressions quickly and repeatably.
 

@@ -193,6 +193,86 @@ def _run_test_menu(driver, tv_tab, hide_tg_window=None):
             logging_utils.log_exception(f"Test command '{cmd}' raised an exception")
 
 
+# The 'add_accounts' command reads account names to bulk-create from this
+# file, next to .env -- one name per line, blank lines ignored. Not
+# .env-configurable itself (there's nothing to validate a plain filename
+# against), just a fixed, documented location.
+ACCOUNTS_TO_ADD_FILE = os.path.join(config.APP_DIR, "accounts_to_add.txt")
+
+
+def _choose_company(prompt):
+    print("\nCompanies:")
+    for i, name in enumerate(config.PROP_FIRMS, 1):
+        print(f"  {i}. {name}")
+    while True:
+        raw = input(f"{prompt} (1-{len(config.PROP_FIRMS)}): ").strip()
+        if raw.isdigit() and 1 <= int(raw) <= len(config.PROP_FIRMS):
+            return config.PROP_FIRMS[int(raw) - 1]
+        print(f"  [FAIL] Enter a number from 1 to {len(config.PROP_FIRMS)}.")
+
+
+def _run_add_accounts(driver, tv_tab, hide_tg_window=None):
+    """The 'add_accounts' command: bulk-creates TradingGenerator portfolios
+    (accounts) for one company, reading their names from
+    ACCOUNTS_TO_ADD_FILE -- for setting up a batch of newly funded
+    prop-firm accounts without clicking through TradingGenerator's
+    '+ Portfolio' modal one at a time.
+
+    Never creates a duplicate company or portfolio: an existing company
+    tab is reused rather than re-created, and any account name already
+    present as a portfolio for that company is skipped.
+    """
+    web_tab = tg.open_tab(driver, tv_tab, hide_window=hide_tg_window)
+    driver.switch_to.window(web_tab)
+    if not tg.ensure_logged_in(driver):
+        print("  [FAIL] Not logged in to TradingGenerator - log in manually and try again.")
+        return
+
+    company = _choose_company("Select a company to add accounts to")
+
+    if company in tg.list_companies(driver):
+        print(f"  '{company}' already exists in TradingGenerator - using it.")
+        tg.select_company(driver, company)
+    else:
+        print(f"  '{company}' doesn't exist yet - creating it...")
+        if not tg.add_company(driver, company):
+            print(f"  [FAIL] Could not create company '{company}' - aborting.")
+            return
+
+    print(f"\nReading account names from '{ACCOUNTS_TO_ADD_FILE}'")
+    print("  One account name per line, blank lines are ignored.")
+    if not os.path.exists(ACCOUNTS_TO_ADD_FILE):
+        print(f"  [FAIL] File not found. Create '{ACCOUNTS_TO_ADD_FILE}' with the account "
+              "names (one per line) and run 'add_accounts' again.")
+        return
+    with open(ACCOUNTS_TO_ADD_FILE, encoding="utf-8") as f:
+        names = [line.strip() for line in f if line.strip()]
+    if not names:
+        print(f"  [FAIL] '{ACCOUNTS_TO_ADD_FILE}' is empty - nothing to add.")
+        return
+    print(f"  Found {len(names)} account name(s).")
+
+    type_raw = input("  Account type for this batch - live or eval [live]: ").strip().lower()
+    account_type = 'eval' if type_raw in ('e', 'eval') else 'live'
+
+    existing_portfolios = set(tg.list_portfolios(driver))
+    added = skipped = failed = 0
+    for name in names:
+        if name in existing_portfolios:
+            print(f"  '{name}' already exists for '{company}' - skipping.")
+            skipped += 1
+            continue
+        if tg.add_portfolio(driver, name, account_type=account_type):
+            existing_portfolios.add(name)
+            added += 1
+        else:
+            print(f"  [FAIL] Could not add '{name}'.")
+            failed += 1
+
+    print(f"\n[ADD ACCOUNTS] '{company}': added {added}, skipped {skipped} (already existed), "
+          f"failed {failed}, out of {len(names)} total.")
+
+
 def main():
     setup_wizard.ensure_configured()
 
@@ -282,7 +362,7 @@ def main():
         login_monitor.start()
 
         if config.IS_ADMIN_BUILD:
-            print("\nCommands: 'web', 'web_multi', 'test', 'setup', 'quit'")
+            print("\nCommands: 'web', 'web_multi', 'test', 'add_accounts', 'setup', 'quit'")
         else:
             print("\nCommands: 'web', 'web_multi', 'setup', 'quit'")
         while True:
@@ -310,6 +390,9 @@ def main():
                         continue
                     hide_tg_window = _ask_hide_tg_window()
                     _run_test_menu(driver, tv_tab, hide_tg_window=hide_tg_window)
+                elif cmd == "add_accounts" and config.IS_ADMIN_BUILD:
+                    hide_tg_window = _ask_hide_tg_window()
+                    _run_add_accounts(driver, tv_tab, hide_tg_window=hide_tg_window)
                 elif cmd == "setup":
                     setup_wizard.run_setup()
                 elif cmd == "quit":
