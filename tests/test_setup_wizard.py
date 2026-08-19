@@ -1,5 +1,6 @@
-"""Covers setup_wizard.check_env_validity()'s interactive fix flow for
-malformed .env values. Run with:
+"""Covers setup_wizard.py: the "skip" option on the Tradovate
+company-selection prompt, and check_env_validity()'s interactive fix flow
+for malformed .env values. Run with:
 
     python -m unittest tests.test_setup_wizard -v
 """
@@ -23,6 +24,55 @@ class _TempEnvFileTestCase(unittest.TestCase):
         self._env_file_patcher.start()
         self.addCleanup(self._env_file_patcher.stop)
         config._reload_env()
+
+
+class ChoosePropFirmSkipTests(_TempEnvFileTestCase):
+    def test_typing_skip_returns_none(self):
+        with patch("builtins.input", return_value="skip"):
+            result = setup_wizard._choose_prop_firm()
+        self.assertIsNone(result)
+
+    def test_skip_is_case_insensitive(self):
+        with patch("builtins.input", return_value="SKIP"):
+            result = setup_wizard._choose_prop_firm()
+        self.assertIsNone(result)
+
+    def test_a_normal_number_still_selects_a_company(self):
+        with patch("builtins.input", return_value="2"):
+            result = setup_wizard._choose_prop_firm()
+        self.assertEqual(result, "TopStep")
+
+    def test_an_invalid_entry_is_rejected_before_reaching_skip_or_a_number(self):
+        with patch("builtins.input", side_effect=["bogus", "skip"]):
+            result = setup_wizard._choose_prop_firm()
+        self.assertIsNone(result)
+
+
+class AddTradovateAccountSkipTests(_TempEnvFileTestCase):
+    def test_skipping_company_selection_never_prompts_for_credentials(self):
+        # If a username/password prompt happened too, this single-item
+        # side_effect would be exhausted and input() would raise
+        # StopIteration.
+        with patch("builtins.input", side_effect=["skip"]):
+            result = setup_wizard._add_tradovate_account()
+        self.assertFalse(result)
+        self.assertEqual(config.TRADOVATE_ACCOUNTS, {})
+
+    def test_providing_both_configures_the_account(self):
+        with patch("builtins.input", side_effect=["2", "trader1", "hunter2"]):
+            result = setup_wizard._add_tradovate_account()
+        self.assertTrue(result)
+        self.assertIn("TopStep", config.TRADOVATE_ACCOUNTS)
+        self.assertEqual(config.TRADOVATE_ACCOUNTS["TopStep"]["username"], "trader1")
+
+
+class ManageTradovateAccountsSkipTests(_TempEnvFileTestCase):
+    def test_skipping_the_first_selection_exits_without_asking_to_add_another(self):
+        # If "Add/update another?" were asked, this single-item side_effect
+        # would be exhausted and input() would raise StopIteration.
+        with patch("builtins.input", side_effect=["skip"]):
+            setup_wizard._manage_tradovate_accounts()
+        self.assertEqual(config.TRADOVATE_ACCOUNTS, {})
 
 
 class CheckEnvValidityTests(_TempEnvFileTestCase):

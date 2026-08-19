@@ -83,30 +83,44 @@ def run_setup():
 def _manage_tradovate_accounts():
     print("\n--- Tradovate accounts (one per prop firm) ---")
     while True:
-        _add_tradovate_account()
+        if not _add_tradovate_account():
+            return
         again = input("Add/update another Tradovate account? [y/N]: ").strip().lower()
         if again != "y":
             return
 
 
 def _add_tradovate_account():
+    """Returns False if the user skipped company selection entirely (see
+    _choose_prop_firm) -- distinct from choosing a company and then filling
+    in its username/password, which always returns True."""
     company = _choose_prop_firm()
+    if company is None:
+        return False
     username_key = config.tradovate_env_key(company, "username")
     password_key = config.tradovate_env_key(company, "password")
     _set_username(f"Tradovate ({company})", username_key)
     _set_password(f"Tradovate ({company})", password_key)
+    return True
 
 
 def _choose_prop_firm():
+    """Returns the chosen company name, or None if the user typed "skip"
+    instead of a number -- e.g. they ran 'setup' only to change
+    TradingGenerator credentials and don't want to touch Tradovate accounts
+    at all right now. Returns None rather than looping into forced
+    username/password prompts."""
     print("\nProp firms:")
     for i, company in enumerate(config.PROP_FIRMS, 1):
         marker = " [configured]" if company in config.TRADOVATE_ACCOUNTS else ""
         print(f"  {i}. {company}{marker}")
     while True:
-        raw = input(f"Select a company (1-{len(config.PROP_FIRMS)}): ").strip()
+        raw = input(f'Select a company (1-{len(config.PROP_FIRMS)}), or "skip": ').strip()
+        if raw.lower() == "skip":
+            return None
         if raw.isdigit() and 1 <= int(raw) <= len(config.PROP_FIRMS):
             return config.PROP_FIRMS[int(raw) - 1]
-        print(f"  [FAIL] Enter a number from 1 to {len(config.PROP_FIRMS)}.")
+        print(f'  [FAIL] Enter a number from 1 to {len(config.PROP_FIRMS)}, or "skip".')
 
 
 def _set_username(service_label, env_key):
