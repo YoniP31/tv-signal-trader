@@ -27,9 +27,21 @@ _suppressed = False
 
 logging.addLevelName(logging.WARNING, "WARN")
 
+
+def _israel_time_converter(timestamp):
+    """Used as _FORMATTER.converter below so app.log's timestamps are
+    always Israel time, regardless of the host machine's own system
+    timezone -- otherwise a VPS running in a different timezone would
+    silently produce misleading log times. `timestamp` is a UTC epoch
+    float (logging.Formatter calls this the same way as time.localtime),
+    and this must return a plain time.struct_time, same as that."""
+    return datetime.datetime.fromtimestamp(timestamp, tz=config.SESSION_TIMEZONE).timetuple()
+
+
 _FORMATTER = logging.Formatter(
     fmt="%(asctime)s %(levelname)-5s %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
 )
+_FORMATTER.converter = _israel_time_converter
 
 _logger = logging.getLogger("tv_signal_trader")
 _logger.setLevel(logging.INFO)
@@ -54,7 +66,16 @@ def _configure_file_handler(log_path):
     return handler
 
 
-_configure_file_handler(os.path.join(config.APP_DIR, "app.log"))
+_LOG_PATH = os.path.join(config.APP_DIR, "app.log")
+if os.path.exists(_LOG_PATH) and os.path.getsize(_LOG_PATH) > 0:
+    # A blank line ahead of each session's own first line, so scrolling
+    # through app.log across multiple runs is easier to visually pick
+    # apart -- skipped for a brand new/empty file, nothing to separate
+    # from yet. Written directly (bypassing the formatter) since this is
+    # a plain visual spacer, not a log record of its own.
+    with open(_LOG_PATH, "a", encoding="utf-8") as _f:
+        _f.write("\n")
+_configure_file_handler(_LOG_PATH)
 _logger.info(
     "=== Session started (PID %d, build=%s) ===",
     os.getpid(), "admin" if config.IS_ADMIN_BUILD else "user",
@@ -133,5 +154,10 @@ def timestamped_print(*args, **kwargs):
     if args and isinstance(args[0], str) and args[0].startswith('\n'):
         builtins.print()
         args = (args[0].lstrip('\n'),) + args[1:]
-    timestamp = datetime.datetime.now().strftime('%H:%M:%S')
+    # Israel time, not the host machine's local time -- otherwise a VPS
+    # running in a different timezone would show console timestamps out of
+    # step with app.log's (see _israel_time_converter above), and with the
+    # trading-session window, which is always Israel time regardless of
+    # where the bot happens to be running.
+    timestamp = config.now_in_israel().strftime('%H:%M:%S')
     builtins.print(f'[{timestamp}]', *args, **kwargs)

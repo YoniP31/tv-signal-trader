@@ -8,6 +8,7 @@ with:
 """
 
 import contextlib
+import datetime
 import io
 import os
 import tempfile
@@ -139,6 +140,66 @@ class FileLoggingTests(unittest.TestCase):
         self.assertIn(" ERROR something went wrong", log)
         self.assertIn("Traceback (most recent call last):", log)
         self.assertIn("ValueError: boom", log)
+
+
+class IsraelTimeConverterTests(unittest.TestCase):
+    """_israel_time_converter is what makes app.log's timestamps Israel
+    time regardless of the host machine's own system timezone -- e.g. a
+    VPS that isn't itself configured for Israel time. Computed purely from
+    the UTC epoch + zoneinfo, never touching time.localtime, so this is
+    correct no matter what timezone the test runner's own machine is in."""
+
+    def test_converts_a_known_utc_instant_to_israel_wall_clock_time(self):
+        import time as time_module
+        from zoneinfo import ZoneInfo
+
+        # 2026-08-17 10:00:00 UTC -- August, so Israel is in DST (UTC+3).
+        utc_dt = datetime.datetime(2026, 8, 17, 10, 0, 0, tzinfo=datetime.timezone.utc)
+        expected = utc_dt.astimezone(ZoneInfo("Asia/Jerusalem")).strftime("%Y-%m-%d %H:%M:%S")
+
+        result = time_module.strftime("%Y-%m-%d %H:%M:%S", lu._israel_time_converter(utc_dt.timestamp()))
+
+        self.assertEqual(result, expected)
+        self.assertEqual(result, "2026-08-17 13:00:00")
+
+
+class SessionMarkerBlankLineTests(unittest.TestCase):
+    """A blank line is written directly ahead of each session's own
+    "=== Session started ===" line once app.log already has content from a
+    previous session -- purely a visual spacer when scrolling through
+    multiple runs, not a log record of its own."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.log_path = os.path.join(self._tmpdir.name, "app.log")
+
+    def tearDown(self):
+        fallback_dir = tempfile.mkdtemp(prefix="tv_signal_trader_tests_")
+        lu._configure_file_handler(os.path.join(fallback_dir, "app.log"))
+
+    def _start_session(self, pid):
+        if os.path.exists(self.log_path) and os.path.getsize(self.log_path) > 0:
+            with open(self.log_path, "a", encoding="utf-8") as f:
+                f.write("\n")
+        lu._configure_file_handler(self.log_path)
+        lu._logger.info("=== Session started (PID %d, build=admin) ===", pid)
+        for handler in lu._logger.handlers:
+            handler.flush()
+
+    def test_first_session_on_an_empty_file_has_no_leading_blank_line(self):
+        self._start_session(111)
+        with open(self.log_path, encoding="utf-8") as f:
+            content = f.read()
+        self.assertFalse(content.startswith("\n"))
+
+    def test_second_session_gets_a_blank_line_before_its_marker(self):
+        self._start_session(111)
+        self._start_session(222)
+        with open(self.log_path, encoding="utf-8") as f:
+            content = f.read()
+        self.assertIn("PID 111", content.split("\n\n")[0])
+        self.assertIn("PID 222", content.split("\n\n")[1])
 
 
 if __name__ == "__main__":
