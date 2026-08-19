@@ -24,12 +24,26 @@ def report_not_taken(driver, params):
         )
 
 
-def sweep_liquidated_accounts(driver, web_tab, tv_tab, connected_company):
+def sweep_liquidated_accounts(driver, web_tab, tv_tab, connected_company, external_open_accounts):
     """Once a day: for each company with a Tradovate account configured,
     compares TradingGenerator's portfolios against that company's actual
     Tradovate sub-accounts, and removes any TradingGenerator portfolio
     whose account is no longer there -- it's been liquidated on the broker
     side.
+
+    Also discovers Tradovate sub-accounts that exist under a configured
+    company's login but have no corresponding TradingGenerator portfolio at
+    all, and checks each one for an open position. Any found are added to
+    `external_open_accounts` (a set of (company, account) pairs, mutated in
+    place) so the main loop treats that company as engaged and refuses to
+    generate new trades there until it closes (see
+    multi_signal_source.check_eligibility) -- purely a safety measure
+    against accidentally opening a second, possibly hedging position on an
+    account we didn't know already had one open. There's nothing to report
+    for these: no matching TradingGenerator portfolio means no Trade Result
+    button to click. Cleared here once closed (and again every loop
+    iteration via multi_signal_source._refresh_external_open_accounts, so
+    it doesn't sit blocked for a full day waiting for the next sweep).
 
     Returns whichever company's Tradovate login is connected once the sweep
     finishes (not necessarily the one passed in), so the caller's own
@@ -58,7 +72,6 @@ def sweep_liquidated_accounts(driver, web_tab, tv_tab, connected_company):
                 continue
             connected_company = company
         tradovate_accounts = trading.list_tradovate_accounts(driver)
-        driver.switch_to.window(web_tab)
 
         if tradovate_accounts is None:
             # Couldn't actually read the account list (transient DOM/timing
@@ -69,8 +82,10 @@ def sweep_liquidated_accounts(driver, web_tab, tv_tab, connected_company):
             # next sweep (tomorrow, or next startup).
             print(f"  [WARN] Could not read '{company}' Tradovate account list - "
                   "skipping its sweep rather than risk removing portfolios that are still fine.")
+            driver.switch_to.window(web_tab)
             continue
 
+        driver.switch_to.window(web_tab)
         for portfolio in tg_portfolios:
             if portfolio not in tradovate_accounts:
                 print(f"  [WARN] '{company} / {portfolio}' not found in its Tradovate account "
@@ -80,6 +95,27 @@ def sweep_liquidated_accounts(driver, web_tab, tv_tab, connected_company):
                 status.mark_portfolio_removed(
                     company, portfolio, 'liquidated (missing from Tradovate account list)'
                 )
+
+        for extra_account in set(tradovate_accounts) - set(tg_portfolios):
+            driver.switch_to.window(tv_tab)
+            if not trading.select_tradovate_account(driver, extra_account):
+                print(f"  [WARN] Could not select '{company}' Tradovate account '{extra_account}' "
+                      "to check it for an open position - skipping.")
+                continue
+            if not trading.click_orders_tab(driver):
+                print(f"  [WARN] Could not open the Orders tab for '{company} / {extra_account}' "
+                      "to check it for an open position - skipping.")
+                continue
+            bracket = trading.find_working_bracket(driver)
+            if bracket.get('tp') and bracket.get('sl'):
+                if (company, extra_account) not in external_open_accounts:
+                    print(f"  [WARN] '{company} / {extra_account}' has an open position but isn't a "
+                          f"TradingGenerator portfolio - holding off on new trades for '{company}' "
+                          "until it closes.")
+                external_open_accounts.add((company, extra_account))
+            else:
+                external_open_accounts.discard((company, extra_account))
+        driver.switch_to.window(web_tab)
 
     print("[SWEEP] Done.")
     return connected_company

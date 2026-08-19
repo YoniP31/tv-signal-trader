@@ -12,6 +12,13 @@ Concurrency rules (confirmed with the user):
   - Eligibility for the next signal is decided *before* clicking Generate,
     using the previous trade's "next portfolio to trade" hint -- not
     "generate first, then discover we have to wait".
+  - A Tradovate sub-account with no matching TradingGenerator portfolio at
+    all ("external", see signal_source.sweep_liquidated_accounts) but an
+    open position of its own blocks *all* new trades for that company --
+    not just on that account -- until it closes, the same as if it were a
+    tracked open position. Purely a safety measure against accidentally
+    opening a second, possibly hedging position on an account we didn't
+    know already had one open.
 
 Reuses signal_source.generate_next_trade/sweep_liquidated_accounts/
 report_not_taken (promoted to public, unchanged behavior) rather than
@@ -32,7 +39,7 @@ from .logging_utils import timestamped_print as print
 
 
 def check_eligibility(next_company, next_portfolio, next_direction, engaged_company, open_positions,
-                       max_positions_per_company=None):
+                       max_positions_per_company=None, external_open_accounts=None):
     """Whether it's OK to generate+open a trade for next_company/next_portfolio
     right now, given which company is currently "engaged" (holds any open
     positions) and what's already open.
@@ -52,10 +59,22 @@ def check_eligibility(next_company, next_portfolio, next_direction, engaged_comp
     same engine instead of its own separate single-position implementation)
     -- defaults to the configured value when None.
 
+    `external_open_accounts` is a set of (company, account) pairs for
+    Tradovate sub-accounts that have an open position but no matching
+    TradingGenerator portfolio at all (see
+    signal_source.sweep_liquidated_accounts/_refresh_external_open_accounts)
+    -- treated as if that whole company were already engaged, so a new
+    trade never gets opened somewhere that could accidentally hedge against
+    a position we don't otherwise track. Defaults to none.
+
     Returns:
       - 'eligible': fine to generate and open now.
       - 'wait_different_company': a *different* company currently holds open
-        positions -- must wait for all of those to close before switching.
+        positions (tracked or external) -- must wait for all of those to
+        close before switching.
+      - 'wait_external_open_position': next_company itself has a Tradovate
+        sub-account open that isn't a TradingGenerator portfolio at all --
+        must wait for it to close before opening anything there.
       - 'wait_this_portfolio': next_portfolio itself already has an open
         position (not flat) -- must wait for it to close before reopening.
       - 'wait_hedge_conflict': next_direction conflicts with the direction of
@@ -69,8 +88,15 @@ def check_eligibility(next_company, next_portfolio, next_direction, engaged_comp
         allowed for this call -- must wait for at least one to close before
         opening another.
     """
-    if engaged_company is not None and engaged_company != next_company:
+    externally_engaged_companies = {c for c, _account in (external_open_accounts or ())}
+    other_company_engaged = (
+        (engaged_company is not None and engaged_company != next_company)
+        or any(c != next_company for c in externally_engaged_companies)
+    )
+    if other_company_engaged:
         return 'wait_different_company'
+    if next_company in externally_engaged_companies:
+        return 'wait_external_open_position'
     if (next_company, next_portfolio) in open_positions:
         return 'wait_this_portfolio'
     if next_direction is not None:
@@ -231,6 +257,50 @@ def _refresh_open_positions(driver, web_tab, tv_tab, open_positions, connected_c
 
         del open_positions[(company, portfolio)]
         print(f"  '{company} / {portfolio}' closed ({outcome}) - slot freed.")
+
+    return connected_company
+
+
+def _refresh_external_open_accounts(driver, tv_tab, external_open_accounts, connected_company):
+    """Re-checks every currently-tracked external open account (a Tradovate
+    sub-account with an open position but no matching TradingGenerator
+    portfolio at all -- see signal_source.sweep_liquidated_accounts) and
+    drops any that have since gone flat, mutating `external_open_accounts`
+    in place. Run every loop iteration (alongside _refresh_open_positions)
+    so a stray position closing mid-day releases that company's trading
+    block right away, rather than sitting blocked until the next day's
+    sweep discovers it.
+
+    Unlike _refresh_open_positions, there's no result to report or
+    determine here -- no matching TradingGenerator portfolio to report
+    against, and no specific bracket pair being tracked (any resolution --
+    win, loss, manual close -- looks the same to us: just "not open
+    anymore"). Just checks whether a working bracket still exists.
+
+    Returns the (possibly updated) connected_company.
+    """
+    for company, account in list(external_open_accounts):
+        driver.switch_to.window(tv_tab)
+        connected_company = _ensure_tradovate_connection(driver, company, connected_company)
+        if connected_company is None:
+            print(f"  [WARN] Could not connect to Tradovate for '{company}' while re-checking "
+                  f"external account '{account}' - will retry next cycle.")
+            continue
+
+        if not trading.select_tradovate_account(driver, account):
+            print(f"  [WARN] Could not select Tradovate account '{account}' while re-checking "
+                  "external open accounts - will retry next cycle.")
+            continue
+
+        if not trading.click_orders_tab(driver):
+            print(f"  [WARN] Could not open the Orders tab for '{account}' - will retry next cycle.")
+            continue
+
+        bracket = trading.find_working_bracket(driver)
+        if not (bracket.get('tp') and bracket.get('sl')):
+            print(f"  '{company} / {account}' (not a TradingGenerator portfolio) is no longer "
+                  f"open - no longer holding '{company}' back from new trades.")
+            external_open_accounts.discard((company, account))
 
     return connected_company
 
@@ -610,6 +680,17 @@ def run_web_loop_multi(driver, max_positions_per_company=None, command_name="web
     positions seed `open_positions` directly; no new trade is generated
     until they've all drained (same wait as any other open position).
 
+    The daily sweep (signal_source.sweep_liquidated_accounts) also
+    populates `external_open_accounts` -- Tradovate sub-accounts under a
+    configured company with an open position but no matching
+    TradingGenerator portfolio at all -- which check_eligibility treats as
+    blocking that whole company the same as a tracked open position, and
+    _refresh_external_open_accounts re-checks every iteration so it clears
+    promptly once flat. Since the sweep always runs on the very first loop
+    iteration too (last_sweep_date starts as None), this covers "at
+    program start" as well as "once a day", without needing its own
+    separate startup pass.
+
     `hide_tg_window` overrides config.HIDE_TRADINGGENERATOR_WINDOW for this
     run only (None = use the config default) -- see tg.open_tab. Only has
     an effect if TradingGenerator's window/tab isn't already open from
@@ -621,6 +702,7 @@ def run_web_loop_multi(driver, max_positions_per_company=None, command_name="web
     next_portfolio = None
     unavailable = set()
     quarantined = set()
+    external_open_accounts = set()
     engaged_company = None
     consecutive_failures = 0
     last_backup_date = None
@@ -655,7 +737,7 @@ def run_web_loop_multi(driver, max_positions_per_company=None, command_name="web
             today = config.now_in_israel().date()
             if last_sweep_date != today:
                 connected_company = signal_source.sweep_liquidated_accounts(
-                    driver, web_tab, tv_tab, connected_company
+                    driver, web_tab, tv_tab, connected_company, external_open_accounts
                 )
                 status.update(last_sweep_at=status.timestamp())
                 last_sweep_date = today
@@ -677,11 +759,15 @@ def run_web_loop_multi(driver, max_positions_per_company=None, command_name="web
             connected_company = _refresh_open_positions(
                 driver, web_tab, tv_tab, open_positions, connected_company, quarantined
             )
+            connected_company = _refresh_external_open_accounts(
+                driver, tv_tab, external_open_accounts, connected_company
+            )
             if engaged_company and not any(c == engaged_company for c, _p in open_positions):
                 engaged_company = None
             status.update(
                 open_positions=[f"{c} / {p}" for c, p in open_positions],
                 quarantined=[f"{c} / {p}" for c, p in quarantined],
+                external_open_accounts=[f"{c} / {a}" for c, a in external_open_accounts],
             )
 
             if recovering:
@@ -737,6 +823,7 @@ def run_web_loop_multi(driver, max_positions_per_company=None, command_name="web
             eligibility = check_eligibility(
                 next_company, next_portfolio, None, engaged_company, open_positions,
                 max_positions_per_company=max_positions_per_company,
+                external_open_accounts=external_open_accounts,
             )
             if eligibility != 'eligible':
                 status.update(loop_state='waiting_for_position_slot')
@@ -846,6 +933,7 @@ def run_web_loop_multi(driver, max_positions_per_company=None, command_name="web
                 portfolio_eligibility = check_eligibility(
                     company, portfolio, params['direction'], engaged_company, open_positions,
                     max_positions_per_company=max_positions_per_company,
+                    external_open_accounts=external_open_accounts,
                 )
                 if portfolio_eligibility == 'eligible':
                     portfolio_params = dict(params, portfolio=portfolio)

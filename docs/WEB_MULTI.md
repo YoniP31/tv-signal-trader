@@ -9,6 +9,7 @@ Type `web` or `web_multi` at the `>` prompt to run one. Either command first ask
 1. **One open position per portfolio.** A portfolio that already has a trade open won't get a second one until the first closes.
 2. **At most `MPPC` open positions per company at once** (default 3, set in `.env`; forced to 1 for the `web` command regardless of this setting).
 3. **Only one company may have open positions at a time.** If a signal comes in for a different company while the current one still has open positions, it waits for all of them to close first, then switches over.
+4. **A Tradovate sub-account with an open position but no matching TradingGenerator portfolio at all also counts as "open" for its company**, blocking new trades there the same as any of the above until it closes — see "Daily account sweep" below.
 
 The bot decides whether it's allowed to open a signal *before* pressing "Generate New Trade" — it always knows the next portfolio TradingGenerator wants to trade next (from the "Next Portfolio to Trade" box), and checks it against the rules above first.
 
@@ -108,6 +109,10 @@ Once per calendar day (at startup if already inside the trading session, or righ
 If the Tradovate account list itself can't be read (a transient DOM/timing glitch — e.g. the account-selector dropdown didn't open in time), that company's sweep is skipped entirely rather than treated as "zero accounts found": an unreadable list is not the same as a confirmed-empty one, and treating it that way would remove every portfolio for that company as if all of them had been liquidated. It's simply retried on the next sweep instead.
 
 **How to test:** hard to fully test without an actually-liquidated account. At minimum, confirm the sweep runs cleanly on startup (look for `[SWEEP] Checking for liquidated accounts...` and `[SWEEP] Done.` in the console) without errors, for every company you have a Tradovate account configured for.
+
+The same sweep also goes the other way: any Tradovate sub-account under a company's login that *isn't* a TradingGenerator portfolio at all gets checked for an open position. If it has one, that whole company is treated as engaged — no new trades get generated there, tracked or not — until it closes, the same as a normal tracked open position (see "The concurrency rules" above). Nothing is ever reported to TradingGenerator for these (there's no matching portfolio to report against); it's purely a safety measure against accidentally opening a second, possibly hedging position on an account the bot didn't know already had one open. Checked again every loop iteration (not just once a day) so it releases the block as soon as the position actually closes, rather than sitting blocked until the next day's sweep. Since the sweep always runs on the very first loop iteration too, this covers program start as well as the once-a-day cadence.
+
+**How to test:** manually open a position (e.g. via the `test` command's `buy`/`sell`) on a Tradovate sub-account that has no matching TradingGenerator portfolio, then run `web_multi` and confirm the console shows it being tracked ("has an open position but isn't a TradingGenerator portfolio") and that company doesn't trade until you close that position by hand, at which point the next cycle should log it as no longer holding that company back.
 
 ## Crash recovery (startup reconciliation)
 
