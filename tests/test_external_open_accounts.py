@@ -12,6 +12,8 @@ sub-account that exists under a company's login but was never added (or
 was removed) as a TradingGenerator portfolio.
 """
 
+import contextlib
+import io
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -79,7 +81,7 @@ class RefreshExternalOpenAccountsTests(unittest.TestCase):
     def test_still_open_account_stays_tracked(self):
         external = {("Apex Trader Funding", "PAAPEX0099")}
         with patch.object(ms, "_ensure_tradovate_connection", return_value="Apex Trader Funding"), \
-             patch.object(ms.trading, "select_tradovate_account", return_value=True), \
+             patch.object(ms.trading, "select_tradovate_account_with_reconnect", return_value=True), \
              patch.object(ms.trading, "click_orders_tab", return_value=True), \
              patch.object(ms.trading, "find_working_bracket", return_value={"tp": "tp1", "sl": "sl1"}):
             ms._refresh_external_open_accounts(self.driver, self.tv_tab, external, "Apex Trader Funding")
@@ -88,7 +90,7 @@ class RefreshExternalOpenAccountsTests(unittest.TestCase):
     def test_closed_account_is_dropped(self):
         external = {("Apex Trader Funding", "PAAPEX0099")}
         with patch.object(ms, "_ensure_tradovate_connection", return_value="Apex Trader Funding"), \
-             patch.object(ms.trading, "select_tradovate_account", return_value=True), \
+             patch.object(ms.trading, "select_tradovate_account_with_reconnect", return_value=True), \
              patch.object(ms.trading, "click_orders_tab", return_value=True), \
              patch.object(ms.trading, "find_working_bracket", return_value={}):
             ms._refresh_external_open_accounts(self.driver, self.tv_tab, external, "Apex Trader Funding")
@@ -109,18 +111,19 @@ class RefreshExternalOpenAccountsTests(unittest.TestCase):
         }
         # PAAPEX0099 still open, PAAPEX0100 now flat.
         def fake_bracket(driver):
-            # select_tradovate_account is mocked below to record which
-            # account was last selected, so this reads that back.
+            # select_tradovate_account_with_reconnect is mocked below to
+            # record which account was last selected, so this reads that
+            # back.
             return {"tp": "t", "sl": "s"} if select_calls[-1] == "PAAPEX0099" else {}
 
         select_calls = []
 
-        def fake_select(driver, account):
+        def fake_select(driver, company, account):
             select_calls.append(account)
             return True
 
         with patch.object(ms, "_ensure_tradovate_connection", return_value="Apex Trader Funding"), \
-             patch.object(ms.trading, "select_tradovate_account", side_effect=fake_select), \
+             patch.object(ms.trading, "select_tradovate_account_with_reconnect", side_effect=fake_select), \
              patch.object(ms.trading, "click_orders_tab", return_value=True), \
              patch.object(ms.trading, "find_working_bracket", side_effect=fake_bracket):
             ms._refresh_external_open_accounts(self.driver, self.tv_tab, external, "Apex Trader Funding")
@@ -143,7 +146,7 @@ class SweepDiscoversExternalOpenAccountsTests(unittest.TestCase):
 
         select_calls = []
 
-        def fake_select(driver, account):
+        def fake_select(driver, company, account):
             select_calls.append(account)
             return True
 
@@ -152,7 +155,7 @@ class SweepDiscoversExternalOpenAccountsTests(unittest.TestCase):
              patch.object(signal_source.tg, "list_portfolios", return_value=tg_portfolios), \
              patch.object(signal_source.trading, "is_tradovate_connected", return_value=True), \
              patch.object(signal_source.trading, "list_tradovate_accounts", return_value=tradovate_accounts), \
-             patch.object(signal_source.trading, "select_tradovate_account", side_effect=fake_select), \
+             patch.object(signal_source.trading, "select_tradovate_account_with_reconnect", side_effect=fake_select), \
              patch.object(signal_source.trading, "click_orders_tab", return_value=True), \
              patch.object(signal_source.trading, "find_working_bracket", side_effect=fake_bracket), \
              patch.object(signal_source.tg, "remove_portfolio"), \
@@ -173,13 +176,19 @@ class SweepDiscoversExternalOpenAccountsTests(unittest.TestCase):
 
     def test_extra_account_with_no_open_position_is_not_tracked(self):
         external = set()
-        self._run_sweep(
-            tg_portfolios=["PAAPEX0001"],
-            tradovate_accounts=["PAAPEX0001", "PAAPEX0099"],
-            bracket_by_account={},
-            external_open_accounts=external,
-        )
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self._run_sweep(
+                tg_portfolios=["PAAPEX0001"],
+                tradovate_accounts=["PAAPEX0001", "PAAPEX0099"],
+                bracket_by_account={},
+                external_open_accounts=external,
+            )
         self.assertEqual(external, set())
+        # Checking an extra account and finding nothing must still be
+        # visible in the log -- not silently skipped over.
+        self.assertIn("PAAPEX0099", buf.getvalue())
+        self.assertIn("no open position", buf.getvalue())
 
     def test_known_portfolio_accounts_are_never_checked_as_external(self):
         # PAAPEX0001 has a matching TG portfolio -- even if it has an open

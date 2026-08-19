@@ -100,7 +100,7 @@ def sweep_liquidated_accounts(driver, web_tab, tv_tab, connected_company, extern
 
         for extra_account in set(tradovate_accounts) - set(tg_portfolios):
             driver.switch_to.window(tv_tab)
-            if not trading.select_tradovate_account(driver, extra_account):
+            if not trading.select_tradovate_account_with_reconnect(driver, company, extra_account):
                 print(f"  [WARN] Could not select '{company}' Tradovate account '{extra_account}' "
                       "to check it for an open position - skipping.")
                 continue
@@ -116,6 +116,7 @@ def sweep_liquidated_accounts(driver, web_tab, tv_tab, connected_company, extern
                           "until it closes.")
                 external_open_accounts.add((company, extra_account))
             else:
+                print(f"  '{company} / {extra_account}' has no open position - nothing to track.")
                 external_open_accounts.discard((company, extra_account))
         driver.switch_to.window(web_tab)
 

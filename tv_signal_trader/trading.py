@@ -230,7 +230,7 @@ def disconnect_tradovate(driver, timeout=15):
     return False
 
 
-def select_tradovate_account(driver, account_name, timeout=10):
+def select_tradovate_account(driver, account_name, timeout=45):
     """Selects `account_name` (e.g. "APEX1871970000006") in the broker
     panel's account-selector dropdown -- the specific Tradovate sub-account
     the next trade should be placed against, distinct from which company's
@@ -241,6 +241,14 @@ def select_tradovate_account(driver, account_name, timeout=10):
     dropdown item by TradingView's stable data-qa-id="account-name-N"
     attribute rather than its CSS-module class names, which look
     build-specific and liable to change across TradingView releases.
+
+    `timeout` only bounds the final confirmation wait (the account switch
+    itself has already been clicked by then) -- on a slow/high-latency
+    machine, actually loading the new account's data can take a while, so
+    this defaults generously rather than giving up early on something
+    that's still genuinely in progress. See
+    select_tradovate_account_with_reconnect for what to use instead when
+    the connection itself can drop mid-switch.
     """
     if not account_name:
         return True
@@ -293,6 +301,43 @@ def select_tradovate_account(driver, account_name, timeout=10):
         elapsed += 0.5
     print(f"  FAILED: could not confirm switch to Tradovate account '{account_name}'.")
     return False
+
+
+def select_tradovate_account_with_reconnect(driver, company, account_name, timeout=45):
+    """select_tradovate_account, but if it fails *and* the Tradovate
+    connection itself has dropped in the meantime, reconnects and retries
+    the same account once instead of leaving it to the caller to give up
+    and move on to something else.
+
+    Switching accounts can occasionally drop the broker panel's connection
+    entirely partway through loading the new account's data (more likely
+    the longer it takes, e.g. on a slow/high-latency machine) -- from the
+    caller's side that looks identical to the account genuinely being
+    unavailable, but it isn't: the account was never actually confirmed
+    bad, the connection just needs re-establishing. If the connection is
+    still up after a failure, this is a real failure (e.g. the account
+    genuinely isn't in the dropdown) and isn't retried.
+
+    Returns True/False, same as select_tradovate_account. The caller's own
+    connected_company tracking doesn't need updating either way -- any
+    reconnect here is to the same company it already thought was
+    connected.
+    """
+    if select_tradovate_account(driver, account_name, timeout=timeout):
+        return True
+    if is_tradovate_connected(driver):
+        return False
+
+    account = config.TRADOVATE_ACCOUNTS.get(company)
+    if account is None:
+        return False
+    print(f"  [WARN] Lost the Tradovate connection while switching to '{account_name}' - "
+          "reconnecting and retrying the same account...")
+    if not connect_tradovate(driver, account['username'], account['password']):
+        print(f"  [FAIL] Could not reconnect to Tradovate for '{company}' after losing the "
+              f"connection while switching to '{account_name}'.")
+        return False
+    return select_tradovate_account(driver, account_name, timeout=timeout)
 
 
 def list_tradovate_accounts(driver):

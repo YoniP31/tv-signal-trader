@@ -186,7 +186,7 @@ def _refresh_open_positions(driver, web_tab, tv_tab, open_positions, connected_c
                   f"checking on '{portfolio}' - will retry next cycle.")
             continue
 
-        if not trading.select_tradovate_account(driver, portfolio):
+        if not trading.select_tradovate_account_with_reconnect(driver, company, portfolio):
             print(f"  [WARN] Could not select Tradovate account '{portfolio}' while "
                   "checking open positions - will retry next cycle.")
             continue
@@ -287,7 +287,7 @@ def _refresh_external_open_accounts(driver, tv_tab, external_open_accounts, conn
                   f"external account '{account}' - will retry next cycle.")
             continue
 
-        if not trading.select_tradovate_account(driver, account):
+        if not trading.select_tradovate_account_with_reconnect(driver, company, account):
             print(f"  [WARN] Could not select Tradovate account '{account}' while re-checking "
                   "external open accounts - will retry next cycle.")
             continue
@@ -341,7 +341,7 @@ def _open_position(driver, web_tab, tv_tab, params, connected_company):
         print(f"  [FAIL] Could not connect to Tradovate for '{company}'.")
         return 'failed', None, None
 
-    if not trading.select_tradovate_account(driver, portfolio):
+    if not trading.select_tradovate_account_with_reconnect(driver, company, portfolio):
         print(f"  [FAIL] Could not select Tradovate account '{portfolio}'.")
         return 'failed', connected_company, None
 
@@ -507,7 +507,7 @@ def _reconcile_open_positions_at_startup(driver, web_tab, tv_tab):
         if connected_company is None:
             print(f"  [WARN] Startup check: could not connect to Tradovate for '{company}' - skipping.")
             continue
-        if not trading.select_tradovate_account(driver, portfolio):
+        if not trading.select_tradovate_account_with_reconnect(driver, company, portfolio):
             print(f"  [WARN] Startup check: could not select Tradovate account '{portfolio}' - skipping.")
             continue
         if not trading.click_orders_tab(driver):
