@@ -1,5 +1,6 @@
 import os
 import signal
+import time
 
 from . import browser
 from . import config
@@ -14,8 +15,30 @@ from . import trading
 from . import tradinggenerator as tg
 from .logging_utils import timestamped_print as print
 
+# Auto-restart safety net for the trading loop (see _run_trading_loop_with_
+# auto_restart below): a run that stops again within this many seconds of
+# starting counts as "rapid" -- e.g. bad TradingGenerator credentials or a
+# dead site would otherwise make every relaunch fail immediately, retrying
+# forever and hammering both sites with fresh Chrome launches. After this
+# many rapid stops in a row, auto-restart gives up and falls back to the
+# '>' prompt instead of continuing to spin.
+_RAPID_RESTART_WINDOW_SECONDS = 120
+_MAX_RAPID_RESTARTS = 3
 
-def _run_test_menu(driver, tv_tab, hide_tg_window=None):
+
+def _next_restart_streak(elapsed_seconds, streak):
+    """Given how long the trading loop just ran before stopping, and the
+    current streak of consecutive rapid (short-lived) restarts, returns the
+    streak's new value -- incremented if this run ended almost immediately
+    (suggesting a relaunch won't fix it), reset to 0 if it ran for a while
+    first (a stop after a long, otherwise-healthy run isn't evidence of a
+    persistent problem, even if it's the same stop_reason as before)."""
+    if elapsed_seconds < _RAPID_RESTART_WINDOW_SECONDS:
+        return streak + 1
+    return 0
+
+
+def _run_test_menu(driver, tv_tab, hide_tg_window=None, relaunch_browser=None):
     """The 'test' command's submenu -- ad hoc, one-off manual verification
     of individual pieces (placing an order, reporting a Trade Result,
     closing a stale Open Trades card, ...) against whatever's actually on
@@ -30,6 +53,12 @@ def _run_test_menu(driver, tv_tab, hide_tg_window=None):
     asked once by the caller before entering this menu, same as for
     web/web_multi -- applies to every TG-related test command below that
     opens/reuses TradingGenerator's tab.
+
+    `relaunch_browser` (main()'s own _relaunch_browser, passed in since it
+    closes over main()'s driver/tv_tab/login_monitor locals that this
+    module-level function has no access to) backs the 'restart_browser'
+    test command below -- None disables that one command, e.g. if this
+    function is ever called from somewhere without a relaunch to offer.
     """
 
     def _tg_tab():
@@ -175,6 +204,15 @@ def _run_test_menu(driver, tv_tab, hide_tg_window=None):
             _test_tg_status,
         ),
     }
+    if relaunch_browser is not None:
+        test_commands["restart_browser"] = (
+            "No setup needed. Force-kills the current browser and brings up a completely fresh "
+            "Chrome + tab + TradingView/TradingGenerator login -- the same full relaunch "
+            "'web'/'web_multi' now perform automatically after a crash or stop. Ends this test "
+            "session afterward (this menu's driver/tab handles go stale once it runs) -- run "
+            "'test' again against the new browser to keep testing.",
+            relaunch_browser,
+        )
 
     while True:
         print("\nTest commands: " + ", ".join(test_commands) + ", back")
@@ -193,6 +231,12 @@ def _run_test_menu(driver, tv_tab, hide_tg_window=None):
         except Exception as exc:
             print(f"  [FAIL] Test command raised: {exc!r}")
             logging_utils.log_exception(f"Test command '{cmd}' raised an exception")
+        if cmd == "restart_browser":
+            # driver/tv_tab above are now stale (main() has already moved on
+            # to new ones) -- every other command in this menu closes over
+            # them directly, so continuing would silently operate on a dead
+            # browser session.
+            return
 
 
 # The 'add_accounts' command reads account names to bulk-create from this
@@ -360,6 +404,81 @@ def main():
             with logging_utils.suppressed():
                 multi_signal_source.run_web_loop_multi(driver, **kwargs)
 
+    def _relaunch_browser():
+        # Full relaunch: force-kill the current browser and bring up a
+        # completely fresh Chrome + tab + login, in place, so
+        # _run_trading_loop_with_auto_restart can just call the trading
+        # loop again afterward as if the app had just started. Reuses the
+        # same persistent profile dir as the original launch (see
+        # browser.build_options), so TradingView/Tradovate's login cookies
+        # survive the kill -- this is what makes an unattended relaunch
+        # actually recover on its own instead of just reopening a
+        # logged-out browser.
+        nonlocal driver, tv_tab, login_monitor
+        print("\n[RESTART] Relaunching the browser...")
+        # The monitor polls under this same driver_lock (see
+        # monitor.LoginMonitor._poll_once) and, for any run longer than one
+        # HEARTBEAT_POLL_RANGE cycle, is essentially guaranteed to already
+        # be sitting blocked trying to acquire it by the time a trading run
+        # stops -- so stop()'s join() would deadlock forever against this
+        # thread's own hold on the lock unless it's released first.
+        # Reacquired immediately after, before touching the driver at all,
+        # so the rest of this function (and the REPL's own 'with' block
+        # this was called from) keeps the same locked-for-the-whole-command
+        # invariant as everywhere else. Stopping the monitor fully before
+        # force_kill also matters on its own: otherwise its poll could
+        # notice the TradingView tab gone mid-kill and hard-exit the whole
+        # process itself, which would defeat the relaunch entirely.
+        state.session.driver_lock.release()
+        try:
+            login_monitor.stop()
+        finally:
+            state.session.driver_lock.acquire()
+
+        browser.force_kill(driver)
+        driver = browser.create_driver()
+        tv_tab = driver.current_window_handle
+
+        print("Opening chart...")
+        driver.get(config.CHART_URL)
+        humanize.long_pause(5, 8)
+        print("Chart loaded:", driver.title)
+
+        tv_logged_in = status.check_tradingview_logged_in(driver)
+        status.update(tradingview_logged_in=tv_logged_in)
+        if tv_logged_in is False:
+            print("[WARN] TradingView doesn't look logged in - sign in in the browser window.")
+
+        login_monitor = monitor.LoginMonitor(driver, tv_tab)
+        login_monitor.start()
+        print("[RESTART] Browser relaunched [OK]")
+
+    def _run_trading_loop_with_auto_restart(**kwargs):
+        # web/web_multi only ever stop on their own for a reason worth
+        # recovering from automatically -- signal_source.MAX_CONSECUTIVE_
+        # FAILURES, a TradingGenerator login failure, or a genuine
+        # unhandled exception (run_web_loop_multi catches those itself and
+        # returns rather than propagating; see its own try/except). Ctrl+C
+        # is handled entirely separately, by _handle_sigint's hard
+        # os._exit -- it never reaches here at all. So any return from
+        # _run_trading_loop below really does mean "stopped and needs a
+        # fresh browser", unattended, for as long as it keeps happening --
+        # bounded only by the rapid-restart safety net above.
+        restart_streak = 0
+        while True:
+            started_at = time.monotonic()
+            _run_trading_loop(**kwargs)
+            restart_streak = _next_restart_streak(time.monotonic() - started_at, restart_streak)
+            if restart_streak >= _MAX_RAPID_RESTARTS:
+                print(
+                    f"\n[FAIL] Trading loop stopped {restart_streak} times in a row, each within "
+                    f"{_RAPID_RESTART_WINDOW_SECONDS}s of starting - giving up on auto-restart. "
+                    "Check status.json / the logs, fix whatever's wrong, then restart manually."
+                )
+                return
+            print("\n[RESTART] Trading loop stopped - relaunching and resuming automatically...")
+            _relaunch_browser()
+
     try:
         print("Opening chart...")
         driver.get(config.CHART_URL)
@@ -389,19 +508,19 @@ def main():
                     # a time" rule, that reproduces single-position-at-a-time
                     # behavior without a separate implementation to maintain.
                     hide_tg_window = _resolve_hide_tg_window()
-                    _run_trading_loop(
+                    _run_trading_loop_with_auto_restart(
                         max_positions_per_company=1, command_name="web", hide_tg_window=hide_tg_window
                     )
                 elif cmd == "web_multi":
                     if not setup_wizard.check_env_validity():
                         continue
                     hide_tg_window = _resolve_hide_tg_window()
-                    _run_trading_loop(hide_tg_window=hide_tg_window)
+                    _run_trading_loop_with_auto_restart(hide_tg_window=hide_tg_window)
                 elif cmd == "test" and config.IS_ADMIN_BUILD:
                     if not setup_wizard.check_env_validity():
                         continue
                     hide_tg_window = _ask_hide_tg_window()
-                    _run_test_menu(driver, tv_tab, hide_tg_window=hide_tg_window)
+                    _run_test_menu(driver, tv_tab, hide_tg_window=hide_tg_window, relaunch_browser=_relaunch_browser)
                 elif cmd == "add_accounts" and config.IS_ADMIN_BUILD:
                     hide_tg_window = _ask_hide_tg_window()
                     _run_add_accounts(driver, tv_tab, hide_tg_window=hide_tg_window)
