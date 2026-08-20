@@ -712,6 +712,13 @@ def run_web_loop_multi(driver, max_positions_per_company=None, command_name="web
         web_tab = tg.open_tab(driver, tv_tab, hide_window=hide_tg_window)
         print("  TradingGenerator tab ready [OK]")
 
+        driver.switch_to.window(web_tab)
+        if not tg.ensure_logged_in(driver):
+            print("  [FAIL] Could not log in to TradingGenerator - stopping.")
+            status.update(loop_state='stopped', stop_reason='tradinggenerator_login_failed')
+            return
+        status.update(tradinggenerator_logged_in=True)
+
         print("  Checking for positions left open or unreported by a previous run...")
         open_positions, connected_company = _reconcile_open_positions_at_startup(driver, web_tab, tv_tab)
         recovering = bool(open_positions)

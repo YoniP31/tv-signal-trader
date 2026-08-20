@@ -35,6 +35,8 @@ def _run_test_menu(driver, tv_tab, hide_tg_window=None):
     def _tg_tab():
         web_tab = tg.open_tab(driver, tv_tab, hide_window=hide_tg_window)
         driver.switch_to.window(web_tab)
+        if not tg.ensure_logged_in(driver):
+            print("  [WARN] Not logged in to TradingGenerator - log in manually before testing.")
         return web_tab
 
     def _active_company_portfolio():
