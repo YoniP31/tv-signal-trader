@@ -143,5 +143,47 @@ def mark_portfolio_available(company, portfolio):
     update_portfolio(company, portfolio, unavailable_reason=None, unavailable_since=None)
 
 
+def _account_key(company, account):
+    return f"{company} / {account}"
+
+
+def record_daily_equity(company, account, *, date, equity):
+    """Appends today's end-of-day Tradovate balance to `account`'s
+    persistent equity history -- {date, equity} pairs only, no profit
+    figure computed here. Per-day profit is always derived later from
+    the equity deltas (see tv_signal_trader/history.py), so this stays a
+    plain record of what was actually observed rather than baking in any
+    profit-calculation assumptions of its own.
+
+    Keyed by company/account name directly, under its own top-level
+    "account_history" section -- deliberately *not* the "portfolios" dict
+    above, which mirrors TradingGenerator's own current portfolio list
+    and disappears once a portfolio is removed there. This history needs
+    to keep tracking an account after that happens (see Second Withdrawal
+    detection, which watches for an equity drop with no matching trade on
+    an account that may no longer even have a TG portfolio at all).
+
+    No-ops (returns the data unchanged) if `date` is already the most
+    recently recorded day -- idempotent against being called more than
+    once for the same day.
+    """
+    data = _read()
+    history = data.setdefault("account_history", {})
+    entry = history.setdefault(_account_key(company, account), {"days": []})
+    days = entry["days"]
+    if days and days[-1]["date"] == date:
+        return data
+    days.append({"date": date, "equity": equity})
+    entry["updated_at"] = _now()
+    return _write(data)
+
+
+def get_equity_history(company, account):
+    """This account's list of {date, equity} dicts, oldest first, or []
+    if nothing's recorded yet."""
+    data = _read()
+    return data.get("account_history", {}).get(_account_key(company, account), {}).get("days", [])
+
+
 def timestamp():
     return _now()

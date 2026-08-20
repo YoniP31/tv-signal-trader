@@ -305,6 +305,53 @@ def _refresh_external_open_accounts(driver, tv_tab, external_open_accounts, conn
     return connected_company
 
 
+def _record_daily_equity(driver, tv_tab, connected_company):
+    """Reads and records today's end-of-day balance for every Tradovate
+    sub-account under every configured company -- not just ones with a
+    current TradingGenerator portfolio, since Second Withdrawal detection
+    (see signal_source.sweep_liquidated_accounts) needs to keep tracking
+    an account after it's been pulled from TG. Persisted via
+    status.record_daily_equity; the day-consistency/day-count math itself
+    lives in history.py, over this raw data.
+
+    Run once per day at session end, alongside the existing
+    TradingGenerator backup (see the last_backup_date gate in
+    run_web_loop_multi) -- a snapshot of where every account's equity
+    landed today, before the next session's sweep compares against it.
+
+    Returns the (possibly updated) connected_company, same convention as
+    every other per-company sweep in this codebase.
+    """
+    today = config.now_in_israel().date().isoformat()
+    for company in config.TRADOVATE_ACCOUNTS:
+        driver.switch_to.window(tv_tab)
+        connected_company = _ensure_tradovate_connection(driver, company, connected_company)
+        if connected_company is None:
+            print(f"  [WARN] Could not connect to Tradovate for '{company}' - skipping its "
+                  "daily equity recording.")
+            continue
+
+        accounts = trading.list_tradovate_accounts(driver)
+        if accounts is None:
+            print(f"  [WARN] Could not read '{company}' Tradovate account list - skipping its "
+                  "daily equity recording.")
+            continue
+
+        for account in accounts:
+            if not trading.select_tradovate_account_with_reconnect(driver, company, account):
+                print(f"  [WARN] Could not select '{company}' Tradovate account '{account}' to "
+                      "record its daily equity - skipping.")
+                continue
+            balance = trading.read_account_balance(driver)
+            if balance is None:
+                print(f"  [WARN] Could not read '{company} / {account}''s balance to record its "
+                      "daily equity - skipping.")
+                continue
+            status.record_daily_equity(company, account, date=today, equity=balance)
+
+    return connected_company
+
+
 def _open_position(driver, web_tab, tv_tab, params, connected_company):
     """Connects/selects the right Tradovate account, runs the pre-trade
     balance check + TP adjustment, and places the order for `params`
@@ -741,7 +788,8 @@ def run_web_loop_multi(driver, max_positions_per_company=None, command_name="web
                     'active': config.in_no_trade_window(),
                 }
             )
-            today = config.now_in_israel().date()
+            now = config.now_in_israel()
+            today = now.date()
             if last_sweep_date != today:
                 connected_company = signal_source.sweep_liquidated_accounts(
                     driver, web_tab, tv_tab, connected_company, external_open_accounts
@@ -757,6 +805,25 @@ def run_web_loop_multi(driver, max_positions_per_company=None, command_name="web
                     # trading fine in the meantime.
                     unavailable.difference_update(quarantined)
                     quarantined.clear()
+
+            # Once a day, at the end of the configured session (or at
+            # midnight Israel time if no session window is configured at
+            # all -- SESSION_END_TIME is None for an unrestricted/24-7
+            # setup, and this must still run for it, not silently never
+            # fire): record every account's daily equity and save a
+            # TradingGenerator backup. Checked unconditionally here (like
+            # the sweep above), not nested under the session-window
+            # "waiting" branch below -- that branch never runs at all for
+            # an unrestricted setup, which is exactly the gap this closes.
+            day_boundary = config.SESSION_END_TIME or datetime.time(0, 0)
+            if now.time() >= day_boundary and last_backup_date != today:
+                print("  Trading day ended - recording daily account equity...")
+                connected_company = _record_daily_equity(driver, tv_tab, connected_company)
+                print("  Saving a TradingGenerator backup...")
+                driver.switch_to.window(web_tab)
+                tg.save_backup(driver)
+                status.update(last_backup_at=status.timestamp())
+                last_backup_date = today
 
             # Always refresh open positions, regardless of the session/
             # no-trade window below -- an already-open position doesn't stop
@@ -795,14 +862,6 @@ def run_web_loop_multi(driver, max_positions_per_company=None, command_name="web
                           "open - waiting for them to close (checking again shortly)...")
                     humanize.random_wait(*config.POSITION_POLL_RANGE)
                     continue
-
-                if (config.SESSION_END_TIME and now.time() > config.SESSION_END_TIME
-                        and last_backup_date != now.date()):
-                    print("  Trading session ended for today - saving a TradingGenerator backup...")
-                    driver.switch_to.window(web_tab)
-                    tg.save_backup(driver)
-                    status.update(last_backup_at=status.timestamp())
-                    last_backup_date = now.date()
 
                 resume_at = now + datetime.timedelta(seconds=session_wait)
                 print(f"  Outside the trading session - waiting until "

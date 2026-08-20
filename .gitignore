@@ -13,6 +13,9 @@ status.json
 # Generated runtime debug log (rotated backups: app.log.1, .2, .3)
 app.log*
 
+# TradingGenerator's "Save Backup" downloads (see tg.save_backup)
+trading-backup-*.json
+
 # Nuitka build output (published via GitHub Releases, not tracked in git)
 /dist/
 *.build/
