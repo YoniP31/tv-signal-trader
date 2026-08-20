@@ -141,7 +141,7 @@ def sweep_liquidated_accounts(driver, web_tab, tv_tab, connected_company, extern
     return connected_company
 
 
-def generate_next_trade(driver, next_company, next_portfolio, unavailable):
+def generate_next_trade(driver, next_company, next_portfolio, unavailable, open_positions=()):
     """Tries to generate a trade for the hinted next_company/next_portfolio
     (or, if there's no hint yet, whatever's currently selected). If that
     portfolio is locked, mismatched, or already known bad, falls back to
@@ -151,12 +151,25 @@ def generate_next_trade(driver, next_company, next_portfolio, unavailable):
     unusable this session (locked, persistent mismatch, etc.) -- mutated in
     place so the caller keeps skipping them on future calls too.
 
-    Returns 'generated', 'not_found' (the generate button itself is missing
-    -- a structural problem, not specific to any one portfolio), or
-    'exhausted' (every known candidate is locked/unavailable).
+    `open_positions` (web_multi only; a dict or set keyed by (company,
+    portfolio), same as multi_signal_source's ledger -- defaults to empty
+    for callers that don't track concurrent positions) is checked
+    alongside `unavailable` so a portfolio that already has a tracked open
+    position is never (re-)targeted here. TradingGenerator itself doesn't
+    know about our own ledger and will happily "generate" a signal for one
+    anyway -- the caller's own eligibility check correctly declines to
+    open it (reporting Not Taken), but without this, nothing stops the
+    very next retry from picking that exact same already-open portfolio
+    again, burning through candidates and generate attempts for a signal
+    that was always going to be declined. Deliberately not folded into
+    `unavailable` itself: unlike a genuinely broken/locked portfolio, this
+    is a purely transient status that clears the moment the position
+    closes, with no cleanup needed here since open_positions already
+    reflects that live.
     """
+    open_keys = open_positions.keys() if hasattr(open_positions, 'keys') else open_positions
     hint = (next_company, next_portfolio) if next_company and next_portfolio else None
-    if hint is None or hint not in unavailable:
+    if hint is None or (hint not in unavailable and hint not in open_keys):
         outcome = tg.generate_trade(
             driver, expected_company=next_company, expected_portfolio=next_portfolio
         )
@@ -173,7 +186,7 @@ def generate_next_trade(driver, next_company, next_portfolio, unavailable):
             print(f"  Current portfolio isn't available ({outcome}) - trying other portfolios...")
 
     for company, portfolio in tg.list_all_candidates(driver):
-        if (company, portfolio) in unavailable:
+        if (company, portfolio) in unavailable or (company, portfolio) in open_keys:
             continue
         print(f"  Trying '{company} / {portfolio}'...")
         outcome = tg.generate_trade(

@@ -853,7 +853,9 @@ def run_web_loop_multi(driver, max_positions_per_company=None, command_name="web
             # clear) so generate_next_trade's own rotation steers clear of
             # them regardless of `unavailable`'s own clear/reset cycles.
             unavailable.update(quarantined)
-            gen_outcome = signal_source.generate_next_trade(driver, next_company, next_portfolio, unavailable)
+            gen_outcome = signal_source.generate_next_trade(
+                driver, next_company, next_portfolio, unavailable, open_positions=open_positions
+            )
             if gen_outcome == 'not_found':
                 print("  [FAIL] Could not generate a trade - stopping loop.")
                 status.update(loop_state='stopped', stop_reason='generate_button_not_found')
