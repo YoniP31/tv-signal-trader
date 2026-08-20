@@ -18,6 +18,23 @@ def build_options():
     options.add_argument("--user-data-dir=" + config.PROFILE_DIR)
     options.add_argument("--log-level=3")
     options.add_argument("--disable-background-networking")
+    # TradingGenerator's window is deliberately hidden (see
+    # tradinggenerator.open_tab), and TradingView's own tab often isn't the
+    # foreground window either on an unattended VPS -- left alone for many
+    # hours (e.g. overnight, outside the session window), Chrome throttles
+    # or effectively suspends a long-idle, occluded window's renderer
+    # process to save resources. The next real interaction with it then has
+    # to wait for that renderer to wake back up, which can take minutes --
+    # occasionally long enough to blow past chromedriver's own
+    # script-execution timeout entirely (seen as a bare "script timeout"
+    # TimeoutException on the very first click right after the daily
+    # session-start sweep, on more than one machine). These three flags are
+    # the standard fix for exactly this class of headless/background
+    # automation issue: keep every window's renderer running at full
+    # priority regardless of visibility or focus.
+    options.add_argument("--disable-background-timer-throttling")
+    options.add_argument("--disable-backgrounding-occluded-windows")
+    options.add_argument("--disable-renderer-backgrounding")
     options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
     options.add_experimental_option("useAutomationExtension", False)
     # TradingGenerator's "Save Backup" button downloads a .json file -- if
