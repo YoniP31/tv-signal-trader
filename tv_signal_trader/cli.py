@@ -145,6 +145,28 @@ def _run_test_menu(driver, tv_tab, hide_tg_window=None, relaunch_browser=None):
             card_count = len(tg.list_open_trade_cards(driver, company, portfolio))
             print(f"  Open Trades cards for this company/portfolio: {card_count}")
 
+    def _test_flip_mode_status():
+        _tg_tab()
+        active = tg.is_flip_mode_active(driver)
+        print(f"  is_flip_mode_active() -> {active}")
+
+    def _test_enable_flip_mode():
+        _tg_tab()
+        tg.enable_flip_mode(driver, config.TRADINGGENERATOR_ADMIN_CODE)
+
+    def _test_disable_flip_mode():
+        _tg_tab()
+        tg.disable_flip_mode(driver, config.TRADINGGENERATOR_ADMIN_CODE)
+
+    def _test_second_withdrawal_status():
+        _tg_tab()
+        marked = tg.is_second_withdrawal_marked(driver)
+        print(f"  is_second_withdrawal_marked() -> {marked}")
+
+    def _test_mark_second_withdrawal():
+        _tg_tab()
+        tg.mark_second_withdrawal(driver, config.TRADINGGENERATOR_ADMIN_CODE)
+
     test_commands = {
         "buy": (
             "Places a manual buy with 150-tick TP/SL on whatever symbol is currently loaded "
@@ -202,6 +224,40 @@ def _run_test_menu(driver, tv_tab, hide_tg_window=None, relaunch_browser=None):
             "TradingGenerator, whether it has a pending Trade Result prompt, and how many cards "
             "it has in the OPEN TRADES grid.",
             _test_tg_status,
+        ),
+        "flip_mode_status": (
+            "Read-only -- in TradingGenerator, select the company/portfolio you want to check "
+            "first. Prints #flipModeBtn's raw label and the on/off reading "
+            "tg.is_flip_mode_active() derives from it -- confirmed live both ways ('Enable Flip "
+            "Mode' off, 'FLIP MODE ON — click to turn off' on).",
+            _test_flip_mode_status,
+        ),
+        "enable_flip_mode": (
+            "In TradingGenerator, select the company/portfolio you want to test first. Requires "
+            "TRADINGGENERATOR_ADMIN_CODE set in .env. Clicks 'Enable Flip Mode' and enters the "
+            "admin code into the native browser prompt that appears -- no-ops if it already "
+            "reads as enabled, refuses to click at all if its state can't be read (a single "
+            "toggle button -- guessing wrong risks flipping it the wrong way).",
+            _test_enable_flip_mode,
+        ),
+        "disable_flip_mode": (
+            "Same as enable_flip_mode, in reverse -- no-ops if it already reads as disabled.",
+            _test_disable_flip_mode,
+        ),
+        "second_withdrawal_status": (
+            "Read-only -- in TradingGenerator, select the company/portfolio you want to check "
+            "first. Prints #secondWithdrawalBtn's raw label and the marked/unmarked reading "
+            "tg.is_second_withdrawal_marked() derives from it -- confirmed live both ways ('Mark "
+            "as Second Withdrawal' unmarked, 'Second Withdrawal — click to cancel' marked).",
+            _test_second_withdrawal_status,
+        ),
+        "mark_second_withdrawal": (
+            "In TradingGenerator, select the (LIVE) company/portfolio you want to test first. "
+            "Requires TRADINGGENERATOR_ADMIN_CODE set in .env. Clicks 'Mark as Second Withdrawal' "
+            "and enters the admin code into the native browser prompt -- no-ops if it already "
+            "reads as marked, refuses to click at all if its state can't be read (a single toggle "
+            "button, same as Flip Mode -- clicking it while already marked cancels it back off).",
+            _test_mark_second_withdrawal,
         ),
     }
     if relaunch_browser is not None:

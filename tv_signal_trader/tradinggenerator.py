@@ -772,3 +772,168 @@ def save_backup(driver):
     humanize.long_pause(1, 2)
     print("  TradingGenerator backup saved [OK]")
     return True
+
+
+def _send_admin_code_to_prompt(driver, code, attempts=10):
+    """Waits briefly for the native browser window.prompt() dialog that
+    clicking #flipModeBtn/#secondWithdrawalBtn triggers (confirmed via
+    screenshot -- there's no page-side DOM for it at all, so this is the
+    only way to interact with it), types `code` into it, and accepts (OK).
+    Returns True once found and accepted -- False if no prompt ever
+    appeared (e.g. the click landed on nothing)."""
+    for _ in range(attempts):
+        try:
+            alert = driver.switch_to.alert
+            alert.send_keys(code)
+            alert.accept()
+            humanize.long_pause(1, 2)
+            return True
+        except Exception:
+            humanize.pause(0.3, 0.6)
+    return False
+
+
+def is_flip_mode_active(driver):
+    """Reads #flipModeBtn's current label to tell whether Flip Mode is on
+    for whichever portfolio is currently selected. Confirmed via live
+    testing: reads "Enable Flip Mode" when off, "FLIP MODE ON — click to
+    turn off" once on (an earlier guess -- matching "disable" in the
+    label -- was wrong; the real "on" wording doesn't contain that word at
+    all, and was silently falling through to the None/can't-tell case).
+    Always prints the raw label read. Returns None if the button can't be
+    found, or its label matches neither confirmed wording -- callers must
+    treat None as "unknown", never as "off" (see _toggle_flip_mode)."""
+    try:
+        btn = driver.find_element(By.ID, "flipModeBtn")
+    except Exception:
+        print("  [WARN] #flipModeBtn not found.")
+        return None
+    label = btn.text.strip()
+    print(f"  #flipModeBtn label: '{label}'")
+    lowered = label.lower()
+    if "flip mode on" in lowered:
+        return True
+    if "enable flip mode" in lowered:
+        return False
+    print("  [WARN] #flipModeBtn's label doesn't match either known wording - can't tell its state.")
+    return None
+
+
+def _toggle_flip_mode(driver, password, target_active, action_label):
+    current = is_flip_mode_active(driver)
+    if current is None:
+        # #flipModeBtn is a single toggle, not a separate on/off pair --
+        # clicking it without knowing the current state risks flipping it
+        # the *wrong* way (e.g. turning off Flip Mode that was actually
+        # already on, right when the state machine most needs it to stay
+        # on). Refusing beats guessing here, even though the label
+        # wording is now confirmed -- this only trips if TradingGenerator
+        # changes it again, or the button doesn't render as expected.
+        print("  [FAIL] Can't tell Flip Mode's current state - refusing to click #flipModeBtn "
+              "rather than risk toggling it the wrong way. See the label logged above.")
+        return False
+    if current is target_active:
+        print(f"  Flip Mode already {'enabled' if target_active else 'disabled'} - nothing to do.")
+        return True
+    try:
+        btn = driver.find_element(By.ID, "flipModeBtn")
+    except Exception:
+        print("  [FAIL] #flipModeBtn not found.")
+        return False
+    btn.click()
+    if not _send_admin_code_to_prompt(driver, password):
+        print(f"  [FAIL] No admin-code prompt appeared after clicking #flipModeBtn ({action_label}).")
+        return False
+    if is_flip_mode_active(driver) is not target_active:
+        print(f"  [FAIL] Flip Mode doesn't show as {'enabled' if target_active else 'disabled'} "
+              f"after {action_label} it.")
+        return False
+    print(f"  Flip Mode {'enabled' if target_active else 'disabled'} [OK]")
+    return True
+
+
+def enable_flip_mode(driver, password):
+    """Clicks #flipModeBtn and enters `password` into the native admin-code
+    prompt it triggers, turning Flip Mode on for whichever portfolio is
+    currently selected. No-ops (returns True without clicking anything) if
+    it's already on -- #flipModeBtn is a single toggle, not a separate
+    on/off pair, so clicking it while already active would turn it back
+    OFF instead of leaving it alone."""
+    return _toggle_flip_mode(driver, password, True, "enabling")
+
+
+def disable_flip_mode(driver, password):
+    """The reverse of enable_flip_mode -- same toggle button, same
+    no-op-if-already-there guard."""
+    return _toggle_flip_mode(driver, password, False, "disabling")
+
+
+def is_second_withdrawal_marked(driver):
+    """Reads #secondWithdrawalBtn's current label to tell whether the
+    currently selected portfolio is already marked. Confirmed live: reads
+    "Mark as Second Withdrawal" when not marked, "Second Withdrawal —
+    click to cancel" once marked -- it's a genuine toggle button, same
+    mechanics as #flipModeBtn, *not* the one-way flag its intended usage
+    (see the Flip Mode plan) originally suggested. An earlier version
+    trusted only the `disabled` DOM attribute and always read as "not
+    marked" as a result -- confirmed live to be wrong (see
+    mark_second_withdrawal's docstring for why that mattered).
+
+    Always prints the raw label read. Returns None if the button can't be
+    found, or its label matches neither confirmed wording -- callers must
+    treat None as "unknown", never as "not marked" (see
+    mark_second_withdrawal)."""
+    try:
+        btn = driver.find_element(By.ID, "secondWithdrawalBtn")
+    except Exception:
+        print("  [WARN] #secondWithdrawalBtn not found.")
+        return None
+    label = btn.text.strip()
+    print(f"  #secondWithdrawalBtn label: '{label}'")
+    lowered = label.lower()
+    if "click to cancel" in lowered:
+        return True
+    if "mark as second withdrawal" in lowered:
+        return False
+    print("  [WARN] #secondWithdrawalBtn's label doesn't match either known wording - can't tell its state.")
+    return None
+
+
+def mark_second_withdrawal(driver, password):
+    """Clicks #secondWithdrawalBtn and enters `password` into the native
+    admin-code prompt it triggers, marking the currently selected
+    portfolio for second withdrawal.
+
+    Confirmed live to be a single toggle button, same as #flipModeBtn ("✓
+    Second Withdrawal — click to cancel" is a real, clickable un-mark
+    state) -- not the one-way flag its intended usage (see the Flip Mode
+    plan) originally suggested. An earlier version treated re-clicking as
+    harmless and skipped this check; confirmed live that it actually
+    cancels the mark right back off, which is exactly the bug this guards
+    against now: no-ops (returns True without clicking) if it already
+    reads as marked, and refuses to click at all (returns False) if the
+    current state can't be determined, same reasoning as
+    _toggle_flip_mode."""
+    current = is_second_withdrawal_marked(driver)
+    if current is None:
+        print("  [FAIL] Can't tell whether second withdrawal is already marked - refusing to click "
+              "#secondWithdrawalBtn rather than risk cancelling it if it's already on. See the label "
+              "logged above.")
+        return False
+    if current:
+        print("  Already marked as second withdrawal - nothing to do.")
+        return True
+    try:
+        btn = driver.find_element(By.ID, "secondWithdrawalBtn")
+    except Exception:
+        print("  [FAIL] #secondWithdrawalBtn not found.")
+        return False
+    btn.click()
+    if not _send_admin_code_to_prompt(driver, password):
+        print("  [FAIL] No admin-code prompt appeared after clicking #secondWithdrawalBtn.")
+        return False
+    if not is_second_withdrawal_marked(driver):
+        print("  [FAIL] Doesn't show as marked for second withdrawal after marking it.")
+        return False
+    print("  Marked as second withdrawal [OK]")
+    return True
