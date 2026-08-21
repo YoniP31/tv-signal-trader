@@ -75,6 +75,54 @@ class ManageTradovateAccountsSkipTests(_TempEnvFileTestCase):
         self.assertEqual(config.TRADOVATE_ACCOUNTS, {})
 
 
+class SetPasswordFieldLabelTests(_TempEnvFileTestCase):
+    def test_uses_the_custom_field_label_in_the_prompt(self):
+        with patch("builtins.input", return_value="abc123") as mock_input:
+            setup_wizard._set_password(
+                "TradingGenerator", "TRADINGGENERATOR_ADMIN_CODE", field_label="admin code"
+            )
+        mock_input.assert_called_once_with("TradingGenerator admin code: ")
+        self.assertEqual(config.get_env_value("TRADINGGENERATOR_ADMIN_CODE"), "abc123")
+
+    def test_rejects_an_empty_value_before_accepting_one(self):
+        with patch("builtins.input", side_effect=["", "abc123"]):
+            setup_wizard._set_password(
+                "TradingGenerator", "TRADINGGENERATOR_ADMIN_CODE", field_label="admin code"
+            )
+        self.assertEqual(config.get_env_value("TRADINGGENERATOR_ADMIN_CODE"), "abc123")
+
+    def test_default_field_label_is_still_plain_password(self):
+        with patch("builtins.input", return_value="hunter2") as mock_input:
+            setup_wizard._set_password("TradingGenerator", "TRADINGGENERATOR_PASSWORD")
+        mock_input.assert_called_once_with("TradingGenerator password: ")
+
+
+class EnsureConfiguredAdminCodeTests(_TempEnvFileTestCase):
+    def test_prompts_for_the_admin_code_when_missing(self):
+        config.set_env_values({
+            "TRADINGGENERATOR_USERNAME": "user1",
+            "TRADINGGENERATOR_PASSWORD": "pass1",
+        })
+        # First answer is the admin code; second is "skip" for the
+        # Tradovate-account prompt ensure_configured() falls into next
+        # since none are configured yet in this temp .env.
+        with patch("builtins.input", side_effect=["secret123", "skip"]):
+            setup_wizard.ensure_configured()
+        self.assertEqual(config.TRADINGGENERATOR_ADMIN_CODE, "secret123")
+
+    def test_does_not_prompt_again_once_already_set(self):
+        config.set_env_values({
+            "TRADINGGENERATOR_USERNAME": "user1",
+            "TRADINGGENERATOR_PASSWORD": "pass1",
+            "TRADINGGENERATOR_ADMIN_CODE": "secret123",
+        })
+        with patch("builtins.input", side_effect=["skip"]) as mock_input:
+            setup_wizard.ensure_configured()
+        # Only the Tradovate-account "skip" prompt -- nothing for the
+        # admin code, since it was already set.
+        mock_input.assert_called_once()
+
+
 class CheckEnvValidityTests(_TempEnvFileTestCase):
     def test_returns_true_immediately_when_nothing_is_wrong(self):
         with patch("builtins.input") as mock_input:

@@ -31,7 +31,7 @@ else:
 PROFILE_DIR = os.path.join(os.path.expanduser("~"), "tv_profile")
 
 CHART_URL = "https://www.tradingview.com/chart/?symbol=MNQ1!"
-SIGNAL_SITE_URL = "https://tradinggenerator-english.tiiny.co/"
+SIGNAL_SITE_URL = "https://test-english.tiiny.site/"
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -338,7 +338,9 @@ def in_no_trade_window(now=None):
 # The setup wizard's terminal prompts are untouched (still plain input()),
 # and every other config.py consumer keeps reading/writing plain values
 # from _env -- only _load_env_file/set_env_values below know this exists.
-_OBSCURED_ENV_KEYS = {"TRADINGGENERATOR_USERNAME", "TRADINGGENERATOR_PASSWORD"}
+_OBSCURED_ENV_KEYS = {
+    "TRADINGGENERATOR_USERNAME", "TRADINGGENERATOR_PASSWORD", "TRADINGGENERATOR_ADMIN_CODE",
+}
 _OBSCURE_PREFIX = "b64:"
 
 
@@ -406,7 +408,7 @@ def set_env_values(values):
 
 
 def _reload_env():
-    global _env, TRADINGGENERATOR_USERNAME, TRADINGGENERATOR_PASSWORD
+    global _env, TRADINGGENERATOR_USERNAME, TRADINGGENERATOR_PASSWORD, TRADINGGENERATOR_ADMIN_CODE
     global TRADOVATE_ACCOUNTS, ACCOUNT_BALANCE_TIERS
     global SESSION_START_TIME, SESSION_END_TIME
     global NO_TRADE_START_TIME, NO_TRADE_END_TIME
@@ -417,6 +419,11 @@ def _reload_env():
     _env = _load_env_file(ENV_FILE)
     TRADINGGENERATOR_USERNAME = _env.get("TRADINGGENERATOR_USERNAME", "")
     TRADINGGENERATOR_PASSWORD = _env.get("TRADINGGENERATOR_PASSWORD", "")
+    # Admin code for Flip Mode / Second Withdrawal's native window.prompt()
+    # dialogs (see tradinggenerator.enable_flip_mode/mark_second_withdrawal)
+    # -- a separate credential from the login password above, distinct on
+    # the page itself (its own prompt, not the login form).
+    TRADINGGENERATOR_ADMIN_CODE = _env.get("TRADINGGENERATOR_ADMIN_CODE", "")
     # One Tradovate account per prop firm. Only firms with both a username
     # and password saved show up here -- see README "Planned work" for the
     # still-missing piece: picking the right account for a given trade.

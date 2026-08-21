@@ -7,6 +7,8 @@ def ensure_configured():
         _set_username("TradingGenerator", "TRADINGGENERATOR_USERNAME")
     if not config.TRADINGGENERATOR_PASSWORD:
         _set_password("TradingGenerator", "TRADINGGENERATOR_PASSWORD")
+    if not config.TRADINGGENERATOR_ADMIN_CODE:
+        _set_password("TradingGenerator", "TRADINGGENERATOR_ADMIN_CODE", field_label="admin code")
     if not config.TRADOVATE_ACCOUNTS:
         print("\nNo Tradovate accounts configured yet - let's add one.")
         _add_tradovate_account()
@@ -76,6 +78,7 @@ def run_setup():
     print("\n=== Setup (press Enter to keep the current value) ===")
     _set_username("TradingGenerator", "TRADINGGENERATOR_USERNAME")
     _set_password("TradingGenerator", "TRADINGGENERATOR_PASSWORD")
+    _set_password("TradingGenerator", "TRADINGGENERATOR_ADMIN_CODE", field_label="admin code")
     _manage_tradovate_accounts()
     print("Setup complete [OK]\n")
 
@@ -135,16 +138,22 @@ def _set_username(service_label, env_key):
         print("  [FAIL] Username can't be empty.")
 
 
-def _set_password(service_label, env_key):
+def _set_password(service_label, env_key, field_label="password"):
     # Plain input(), not getpass: getpass reads via the Windows console API
     # directly rather than stdin, which mishandles pasted text (issue #1) and
     # hides what you're typing with no way to catch a paste corruption.
+    #
+    # field_label lets this double up for TRADINGGENERATOR_ADMIN_CODE (a
+    # separate secret from the login password, gating Flip Mode's/Second
+    # Withdrawal's native prompts -- see tradinggenerator.py) without a
+    # near-duplicate helper: same obscured-storage/non-empty handling,
+    # just a different word in the prompt/error text.
     current = config.get_env_value(env_key)
     suffix = " [keep current]" if current else ""
     while True:
-        raw = input(f"{service_label} password{suffix}: ").strip()
+        raw = input(f"{service_label} {field_label}{suffix}: ").strip()
         value = raw or current
         if value:
             config.set_env_values({env_key: value})
             return
-        print("  [FAIL] Password can't be empty.")
+        print(f"  [FAIL] {field_label.capitalize()} can't be empty.")
