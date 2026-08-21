@@ -185,5 +185,50 @@ def get_equity_history(company, account):
     return data.get("account_history", {}).get(_account_key(company, account), {}).get("days", [])
 
 
+def _update_account_history(company, account, **fields):
+    data = _read()
+    history = data.setdefault("account_history", {})
+    entry = history.setdefault(_account_key(company, account), {"days": []})
+    entry.update(fields)
+    entry["updated_at"] = _now()
+    return _write(data)
+
+
+def set_running_equity_target(company, account, target):
+    """Persists `account`'s current active Flip Mode equity target -- the
+    balance level it's chasing right now. Not always one of the tier's two
+    fixed initial/final thresholds: Flip Mode's own escalation formula can
+    push it higher still (see the Flip Mode plan), so this has to be
+    tracked per account rather than re-derived from the tier alone, and
+    persisted so a restart doesn't lose track of which target is active
+    mid-state-machine. `target` may be None to clear it."""
+    return _update_account_history(company, account, running_equity_target=target)
+
+
+def get_running_equity_target(company, account):
+    """This account's current active Flip Mode equity target, or None if
+    never set -- the caller (the Flip Mode state machine) decides what to
+    seed a never-set account with, not this module."""
+    data = _read()
+    return data.get("account_history", {}).get(_account_key(company, account), {}).get("running_equity_target")
+
+
+def set_cycle_start_date(company, account, date):
+    """Marks the start of `account`'s current withdrawal cycle -- the
+    date history.py's consistency/day-count helpers should start counting
+    from via their `since_date` parameter. Reset every time an account is
+    re-added to TradingGenerator after a detected withdrawal (see the Flip
+    Mode plan's Phase 3), so an old cycle's profitable days can't count
+    toward qualifying for a target that didn't exist yet when they
+    happened. `date` may be None to clear it."""
+    return _update_account_history(company, account, cycle_start_date=date)
+
+
+def get_cycle_start_date(company, account):
+    """This account's current cycle-start date, or None if never set."""
+    data = _read()
+    return data.get("account_history", {}).get(_account_key(company, account), {}).get("cycle_start_date")
+
+
 def timestamp():
     return _now()

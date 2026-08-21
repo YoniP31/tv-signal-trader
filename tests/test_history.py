@@ -29,6 +29,27 @@ class DailyProfitsTests(unittest.TestCase):
             [("2026-08-01", 1000), ("2026-08-02", -500), ("2026-08-03", 2500)],
         )
 
+    def test_since_date_filters_the_output_but_not_the_deltas_feeding_it(self):
+        days = [
+            {"date": "2026-08-01", "equity": 51000},
+            {"date": "2026-08-02", "equity": 50500},
+            {"date": "2026-08-03", "equity": 53000},
+        ]
+        # Day 2 (2026-08-02) is excluded, but day 3's delta is still
+        # computed against day 2's real equity (50500), not re-based
+        # against starting_balance just because day 2 got filtered out.
+        self.assertEqual(
+            history.daily_profits(days, 50000, since_date="2026-08-03"),
+            [("2026-08-03", 2500)],
+        )
+
+    def test_since_date_before_every_day_changes_nothing(self):
+        days = [{"date": "2026-08-01", "equity": 51000}]
+        self.assertEqual(
+            history.daily_profits(days, 50000, since_date="2026-07-01"),
+            [("2026-08-01", 1000)],
+        )
+
 
 class BestDayProfitTests(unittest.TestCase):
     def test_no_history_is_zero(self):
@@ -51,6 +72,13 @@ class BestDayProfitTests(unittest.TestCase):
         # Day 1: -1000, Day 2: -500.
         self.assertEqual(history.best_day_profit(days, 50000), -500)
 
+    def test_since_date_excludes_an_earlier_bigger_day(self):
+        days = [
+            {"date": "2026-08-01", "equity": 55000},   # +5000 (excluded)
+            {"date": "2026-08-02", "equity": 55500},   # +500 (included)
+        ]
+        self.assertEqual(history.best_day_profit(days, 50000, since_date="2026-08-02"), 500)
+
 
 class TotalProfitTests(unittest.TestCase):
     def test_no_history_is_zero(self):
@@ -62,6 +90,15 @@ class TotalProfitTests(unittest.TestCase):
             {"date": "2026-08-02", "equity": 54000},
         ]
         self.assertEqual(history.total_profit(days, 50000), 4000)
+
+    def test_since_date_is_profit_since_that_cutoff_not_all_time(self):
+        days = [
+            {"date": "2026-08-01", "equity": 53000},   # a prior cycle's +3000
+            {"date": "2026-08-02", "equity": 53500},   # new cycle: +500
+            {"date": "2026-08-03", "equity": 54200},   # new cycle: +700
+        ]
+        # Since 2026-08-02: 500 + 700 = 1200, not 54200 - 50000 = 4200.
+        self.assertEqual(history.total_profit(days, 50000, since_date="2026-08-02"), 1200)
 
 
 class ProfitableDayCountTests(unittest.TestCase):
@@ -80,6 +117,14 @@ class ProfitableDayCountTests(unittest.TestCase):
     def test_a_day_exactly_at_the_minimum_counts(self):
         days = [{"date": "2026-08-01", "equity": 50250}]  # +250, exactly min
         self.assertEqual(history.profitable_day_count(days, 50000, 250), 1)
+
+    def test_since_date_excludes_an_earlier_qualifying_day(self):
+        days = [
+            {"date": "2026-08-01", "equity": 50500},   # +500, qualifies (excluded)
+            {"date": "2026-08-02", "equity": 50600},   # +100, below min
+            {"date": "2026-08-03", "equity": 51000},   # +400, qualifies
+        ]
+        self.assertEqual(history.profitable_day_count(days, 50000, 250, since_date="2026-08-02"), 1)
 
 
 if __name__ == "__main__":
