@@ -20,6 +20,7 @@ import datetime
 import logging
 import logging.handlers
 import os
+import sys
 
 from . import config
 
@@ -200,4 +201,21 @@ def timestamped_print(*args, **kwargs):
     # trading-session window, which is always Israel time regardless of
     # where the bot happens to be running.
     timestamp = config.now_in_israel().strftime('%H:%M:%S')
-    builtins.print(f'[{timestamp}]', *args, **kwargs)
+    try:
+        builtins.print(f'[{timestamp}]', *args, **kwargs)
+    except UnicodeEncodeError:
+        # The console's codepage (e.g. Windows' legacy cp1252, whenever
+        # stdout isn't UTF-8-configured) can't represent every character
+        # some sources produce -- TradingGenerator's own UI text uses
+        # emoji, for instance (see tradinggenerator.is_flip_mode_active).
+        # Re-encoding with unencodable characters replaced keeps the app
+        # (and the unattended trading loop it's usually running inside)
+        # alive and the message readable-enough, rather than a single
+        # print() call over what's ultimately just cosmetic text crashing
+        # the whole thing.
+        encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+        safe_args = tuple(
+            a.encode(encoding, errors="replace").decode(encoding) if isinstance(a, str) else a
+            for a in args
+        )
+        builtins.print(f'[{timestamp}]', *safe_args, **kwargs)

@@ -63,6 +63,42 @@ class SuppressedTests(unittest.TestCase):
         self.assertIn("normal output", buf.getvalue())
 
 
+class _Cp1252Stdout:
+    """Mimics a real Windows console stuck on the legacy cp1252 codepage --
+    write() raises UnicodeEncodeError for any character cp1252 can't
+    represent, same as what actually happened printing TradingGenerator's
+    emoji-laden button text verbatim (see
+    tradinggenerator.is_flip_mode_active)."""
+
+    encoding = "cp1252"
+
+    def __init__(self):
+        self.written = []
+
+    def write(self, text):
+        text.encode(self.encoding)  # raises UnicodeEncodeError, same as a real print() would
+        self.written.append(text)
+
+    def flush(self):
+        pass
+
+
+class UnencodableConsoleTests(unittest.TestCase):
+    def test_falls_back_instead_of_crashing_on_a_character_the_console_cant_encode(self):
+        fake_stdout = _Cp1252Stdout()
+        with contextlib.redirect_stdout(fake_stdout):
+            lu.timestamped_print("Flip Mode label: \U0001f504 Enable Flip Mode")
+        output = "".join(fake_stdout.written)
+        self.assertIn("Flip Mode label:", output)
+        self.assertNotIn("\U0001f504", output)
+
+    def test_plain_ascii_text_is_unaffected(self):
+        fake_stdout = _Cp1252Stdout()
+        with contextlib.redirect_stdout(fake_stdout):
+            lu.timestamped_print("Chart loaded")
+        self.assertIn("Chart loaded", "".join(fake_stdout.written))
+
+
 class FileLoggingTests(unittest.TestCase):
     """logging_utils mirrors every timestamped_print() call into app.log,
     leveled and cleaned up (no terminal indentation/blank-line spacers) --
