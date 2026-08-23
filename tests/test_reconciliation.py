@@ -435,8 +435,8 @@ class RefreshOpenPositionsTests(unittest.TestCase):
              patch.object(ms.trading, "select_tradovate_account", return_value=True), \
              patch.object(ms.trading, "click_orders_tab", return_value=True), \
              patch.object(ms.trading, "check_bracket_status", return_value="manual_close"), \
-             patch.object(ms.trading, "account_needs_removal",
-                           return_value=(False, 25000, "25k", {"min": 23000, "max": 27000})), \
+             patch.object(ms, "evaluate_account_for_removal",
+                           return_value=("keep_normal", 25000, 27000, self.company)), \
              patch.object(ms, "_select_and_verify", return_value=True), \
              patch.object(ms.status, "update_portfolio"), \
              patch.object(ms.tg, "report_trade_result") as report_mock, \

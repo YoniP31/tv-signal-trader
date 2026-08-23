@@ -29,6 +29,7 @@ import datetime
 import time
 
 from . import config
+from . import flip_mode
 from . import humanize
 from . import logging_utils
 from . import signal_source
@@ -199,11 +200,6 @@ def _refresh_open_positions(driver, web_tab, tv_tab, open_positions, connected_c
         if outcome == 'open':
             continue
 
-        needs_removal, balance, tier_size, tier_range = trading.account_needs_removal(
-            driver, position['account_type']
-        )
-        status.update_portfolio(company, portfolio, balance=balance, tier_size=tier_size, tier_range=tier_range)
-
         # A manual close is always reported as Not Taken and quarantined
         # regardless of daily P&L (see below), so there's no point checking
         # it here.
@@ -218,11 +214,16 @@ def _refresh_open_positions(driver, web_tab, tv_tab, open_positions, connected_c
                     elif config.DAILY_LOSS_LIMIT is not None and total_pl <= -config.DAILY_LOSS_LIMIT:
                         daily_limit_reason = 'daily_loss_limit_reached'
 
-        driver.switch_to.window(web_tab)
-        if not _select_and_verify(driver, company, portfolio):
-            print(f"  [WARN] Could not safely select '{company} / {portfolio}' to report its "
+        decision, balance, _tp_cap_threshold, connected_company = evaluate_account_for_removal(
+            driver, web_tab, tv_tab, company, portfolio, connected_company
+        )
+        if decision == 'failed':
+            print(f"  [WARN] Could not evaluate '{company} / {portfolio}' to report its "
                   "result - will retry next cycle.")
             continue
+        status.update_portfolio(company, portfolio, balance=balance)
+        # evaluate_account_for_removal leaves the driver on web_tab with
+        # company/portfolio already selected -- safe to report directly.
 
         if outcome == 'manual_close':
             print(f"  [WARN] '{company} / {portfolio}' appears to have been closed manually or "
@@ -243,12 +244,8 @@ def _refresh_open_positions(driver, web_tab, tv_tab, open_positions, connected_c
                 asset=position['asset'], direction=position['direction'], contracts=position['contracts'],
                 sl_ticks=position['sl_ticks'], tp_ticks=position['tp_ticks'], result=outcome,
             )
-            if needs_removal:
-                tg.remove_portfolio(driver, portfolio)
-                status.mark_portfolio_removed(
-                    company, portfolio, 'balance outside allowed range (blown/hit target)'
-                )
-            elif daily_limit_reason:
+            _act_on_flip_mode_decision(driver, company, portfolio, decision)
+            if decision not in ('blown', 'qualifies_for_removal') and daily_limit_reason:
                 limit_kind = 'profit' if daily_limit_reason == 'daily_profit_limit_reached' else 'loss'
                 print(f"  [WARN] '{company} / {portfolio}' hit its daily {limit_kind} limit - "
                       "quarantining until the next session.")
@@ -352,19 +349,376 @@ def _record_daily_equity(driver, tv_tab, connected_company):
     return connected_company
 
 
+def _read_balance_and_tier(driver, tv_tab, company, portfolio, connected_company):
+    """Connects to `company`'s Tradovate login, selects `portfolio`'s
+    sub-account, and reads its current balance plus the tier it's
+    guessed to belong to (same "closest nominal size" guess
+    account_needs_removal used -- there's no way to read an account's
+    actual size off the page). Purely on tv_tab -- no TradingGenerator
+    interaction at all.
+
+    Deliberately split out from _gather_flip_mode_inputs so
+    evaluate_account_for_removal can check the blown-account threshold
+    (which only needs this much) *before* ever touching TradingGenerator
+    -- an account being removed for being blown has nothing to do with
+    Flip Mode, and shouldn't cost a trip to its tab (or a log line about
+    its Flip Mode button) to find that out.
+
+    Returns (info_dict, connected_company) with 'current_balance',
+    'tier_size', and 'tier' (the raw config.ACCOUNT_BALANCE_TIERS entry,
+    with 'min'/'max'/'max_initial'/'max_final'), or (None,
+    connected_company) if a required read failed (logged along the way).
+    """
+    driver.switch_to.window(tv_tab)
+    connected_company = _ensure_tradovate_connection(driver, company, connected_company)
+    if connected_company is None:
+        print(f"  [FAIL] Could not connect to Tradovate for '{company}'.")
+        return None, None
+
+    if not trading.select_tradovate_account_with_reconnect(driver, company, portfolio):
+        print(f"  [FAIL] Could not select Tradovate account '{portfolio}'.")
+        return None, connected_company
+
+    balance = trading.read_account_balance(driver)
+    if balance is None:
+        print(f"  [FAIL] Could not read '{company} / {portfolio}''s balance.")
+        return None, connected_company
+
+    tiers = config.ACCOUNT_BALANCE_TIERS
+    tier_size = min(tiers, key=lambda size: abs(balance - size))
+    return {
+        'current_balance': balance,
+        'tier_size': tier_size,
+        'tier': tiers[tier_size],
+    }, connected_company
+
+
+def _gather_flip_mode_inputs(driver, web_tab, tv_tab, company, portfolio, connected_company, balance_info=None):
+    """Reads everything flip_mode.evaluate() needs for `company`/`portfolio`
+    from the live page + status.json: current balance and account type
+    (EVAL/LIVE) from TradingGenerator/Tradovate, whether Flip Mode is
+    currently active, and its persisted equity history/running target/
+    cycle-start date/cycle-start balance (status.py). Also includes the
+    tier's min threshold (for evaluate_account_for_removal's blown-account
+    check) and 'tp_cap_threshold' (for _open_position's take-profit
+    capping) -- the higher of running_equity_target and the tier final,
+    since a trade should always be capped against the account's actual
+    profit goal, not its not-yet-proven initial staging checkpoint (see
+    'tp_cap_threshold's own computation below for the full reasoning) --
+    so callers of either don't need their own separate tier lookup /
+    balance re-read.
+
+    `balance_info` (optional) reuses an already-fetched
+    _read_balance_and_tier result instead of reading Tradovate's balance
+    a second time -- evaluate_account_for_removal passes its own
+    blown-check result straight through here once an account turns out
+    not to be blown.
+
+    Read-only -- doesn't seed/persist a first-time running_equity_target
+    or cycle_starting_balance itself (falls back to the tier's initial
+    threshold / true tier size in memory only, so a caller can dry-run
+    this without writing anything); that's left to whichever step
+    actually acts on the decision.
+
+    Returns (inputs_dict, connected_company), or (None, connected_company)
+    if any required live read failed (logged along the way).
+    """
+    if balance_info is None:
+        balance_info, connected_company = _read_balance_and_tier(
+            driver, tv_tab, company, portfolio, connected_company
+        )
+        if balance_info is None:
+            return None, connected_company
+
+    balance = balance_info['current_balance']
+    tier_size = balance_info['tier_size']
+    tier = balance_info['tier']
+
+    driver.switch_to.window(web_tab)
+    if not _select_and_verify(driver, company, portfolio):
+        return None, connected_company
+
+    account_type = tg.read_active_account_type(driver)
+    if account_type is None:
+        print(f"  [FAIL] Could not read '{company} / {portfolio}''s account type (EVAL/LIVE).")
+        return None, connected_company
+
+    in_flip_mode = tg.is_flip_mode_active(driver)
+    if in_flip_mode is None:
+        print(f"  [FAIL] Could not read whether Flip Mode is active for '{company} / {portfolio}'.")
+        return None, connected_company
+
+    tier_initial = tier['max_initial'].get(account_type, max(tier['max_initial'].values()))
+    tier_final = tier['max_final'].get(account_type, max(tier['max_final'].values()))
+
+    running_equity_target = status.get_running_equity_target(company, portfolio)
+    if running_equity_target is None:
+        running_equity_target = tier_initial
+
+    # The point of capping a trade's take-profit at all is to land the
+    # account at its actual profit goal -- which is running_equity_target,
+    # not the tier's old flat max. But running_equity_target starts out at
+    # the *initial* threshold, a staging checkpoint for triggering the
+    # first consistency check, never a real ceiling on its own -- capping
+    # against it directly, before that first evaluation ever happens,
+    # would cap trades short of the real goal. So this uses whichever is
+    # higher between running_equity_target and the tier final: still
+    # initial (never evaluated yet) -> final wins; already advanced to
+    # final, or escalated past it because consistency failed -> that
+    # value wins, since by then it *is* the real, currently-active
+    # ceiling. Confirmed with the user: this makes capping track the
+    # profit goal directly, not the account's historical loss-side
+    # thresholds -- it's just not allowed to use the not-yet-proven
+    # initial value as if it already were that goal.
+    tp_cap_threshold = max(running_equity_target, tier_final)
+
+    # The account's *current cycle's* starting balance -- its true
+    # original tier size on a first cycle, or the equity right after its
+    # most recent detected withdrawal once one's actually happened (see
+    # status.set_cycle_starting_balance's own docstring for why this
+    # can't just always be the tier size: a withdrawal isn't a trading
+    # loss, and consistency must never be measured across one).
+    cycle_starting_balance = status.get_cycle_starting_balance(company, portfolio)
+    starting_balance = cycle_starting_balance if cycle_starting_balance is not None else tier_size
+
+    return {
+        'current_balance': balance,
+        'account_type': account_type,
+        'tier_size': tier_size,
+        'tier_min': tier['min'],
+        'tier_initial': tier_initial,
+        'tier_final': tier_final,
+        'tp_cap_threshold': tp_cap_threshold,
+        'starting_balance': starting_balance,
+        'running_equity_target': running_equity_target,
+        'in_flip_mode': in_flip_mode,
+        'days': status.get_equity_history(company, portfolio),
+        'since_date': status.get_cycle_start_date(company, portfolio),
+    }, connected_company
+
+
+_FLIP_MODE_DECISION_LABELS = {
+    'keep_normal': 'Staying in normal trading.',
+    'enter_flip_mode': 'Entering Flip Mode.',
+    'keep_flip_mode': 'Staying in Flip Mode.',
+    'exit_flip_mode': 'Exiting Flip Mode.',
+    'qualifies_for_removal': 'Qualifies for removal.',
+}
+
+
+def _print_flip_mode_decision(company, portfolio, decision, new_target, details):
+    """Narrates a real flip_mode.evaluate() pass: which of the 3
+    conditions were actually checked this cycle, their actual values
+    against their thresholds, and the decision reached -- so a console
+    watching the live loop shows *why*, not just the isolated
+    '#flipModeBtn label: ...' read that used to be the only visible trace
+    of any of this happening. Never called for 'blown' (see
+    evaluate_account_for_removal): that decision never reaches
+    flip_mode.evaluate() at all, so there's nothing here to narrate.
+    """
+    balance = details['current_balance']
+    target_before = details['running_equity_target_before']
+    label = "Flip Mode check (already active)" if details['in_flip_mode'] else "Flip Mode check"
+    print(f"  {label} for '{company} / {portfolio}': balance {balance:.2f}, target {target_before:.2f}")
+
+    def _print_consistency():
+        divisor = details['consistency_divisor']
+        total = details['total_profit']
+        best_day = details['best_day_profit']
+        holds = details['consistency_holds']
+        print(f"    Consistency: best day {best_day:.2f} vs {divisor:g}x total profit {total:.2f} "
+              f"({divisor * total:.2f}) -> {'holds' if holds else 'FAILS'}")
+
+    def _print_day_count():
+        print(f"    Day count: {details['profitable_days']} of {details['min_profitable_days']} "
+              f"required profitable days -> {'met' if details['day_count_met'] else 'not met'}")
+
+    if details['in_flip_mode']:
+        # Equity ceiling is disregarded while in Flip Mode -- day-count is
+        # checked first, and is the only thing that matters until it's met.
+        _print_day_count()
+        if details['total_profit'] is not None:
+            _print_consistency()
+            print(f"    Balance re-check: {balance:.2f} "
+                  f"{'>=' if balance >= target_before else '<'} {target_before:.2f} "
+                  "(the target active when Flip Mode was entered)")
+    elif details['total_profit'] is None:
+        print(f"    Equity: {balance:.2f} < {target_before:.2f} - below target, nothing else checked yet.")
+    else:
+        print(f"    Equity: {balance:.2f} >= {target_before:.2f} - target reached, checking consistency.")
+        _print_consistency()
+        print(f"    Target for the next round: {new_target:.2f}"
+              + (" (tier final)" if details['consistency_holds'] else " (escalated - consistency failed)"))
+        if details['profitable_days'] is not None:
+            _print_day_count()
+
+    print(f"    -> {_FLIP_MODE_DECISION_LABELS.get(decision, decision)}")
+
+
+def evaluate_flip_mode(driver, web_tab, tv_tab, company, portfolio, connected_company):
+    """Gathers real data for `company`/`portfolio` (see
+    _gather_flip_mode_inputs) and runs it through flip_mode.evaluate() --
+    the decision step only. Doesn't act on the result itself (no button
+    clicks, no remove_portfolio, no status.json writes) -- that's left to
+    whichever caller actually wires this into real behavior; for now it's
+    only reached via the 'flip_mode_dry_run' test command.
+
+    Returns (decision, new_running_equity_target, inputs, connected_company)
+    -- decision/new_running_equity_target/inputs are all None if the
+    required live data couldn't be read.
+    """
+    inputs, connected_company = _gather_flip_mode_inputs(
+        driver, web_tab, tv_tab, company, portfolio, connected_company
+    )
+    if inputs is None:
+        return None, None, None, connected_company
+
+    decision, new_target, details = flip_mode.evaluate(
+        current_balance=inputs['current_balance'],
+        starting_balance=inputs['starting_balance'],
+        tier_final=inputs['tier_final'],
+        running_equity_target=inputs['running_equity_target'],
+        in_flip_mode=inputs['in_flip_mode'],
+        days=inputs['days'],
+        min_profitable_days=config.FLIP_MODE_MIN_PROFITABLE_DAYS,
+        min_daily_profit=config.FLIP_MODE_MIN_DAILY_PROFIT,
+        consistency_divisor=config.FLIP_MODE_CONSISTENCY_DIVISOR,
+        since_date=inputs['since_date'],
+    )
+    _print_flip_mode_decision(company, portfolio, decision, new_target, details)
+    return decision, new_target, inputs, connected_company
+
+
+def evaluate_account_for_removal(driver, web_tab, tv_tab, company, portfolio, connected_company):
+    """The Flip Mode replacement for trading.account_needs_removal, used
+    by both _refresh_open_positions and _open_position. The min-side
+    (blown account) check is completely untouched -- still a flat
+    balance<=tier_min comparison; only the max-side (profit-target) logic
+    is replaced by flip_mode.evaluate()'s 3-condition state machine (see
+    the Flip Mode plan).
+
+    Checks the blown threshold via _read_balance_and_tier alone, *before*
+    ever switching to TradingGenerator's tab -- an account being removed
+    for being blown has nothing to do with Flip Mode, so it shouldn't
+    cost a trip there (or a log line about its Flip Mode button) to find
+    that out. Only once an account turns out not to be blown does this
+    move on to _gather_flip_mode_inputs for the rest.
+
+    By the time this returns a 'blown' or Flip-Mode decision, the driver
+    is left on `web_tab` with `company`/`portfolio` already selected --
+    callers that need to act on TradingGenerator right after (report a
+    trade result, click a Flip Mode button, remove the portfolio) don't
+    need to re-select. Not guaranteed for 'failed' -- the driver may still
+    be on tv_tab if that's as far as this got.
+
+    Persists the resulting running_equity_target -- pure bookkeeping, not
+    a live-page action -- but does NOT click enable_flip_mode/
+    disable_flip_mode or remove_portfolio itself: the two call sites need
+    that to happen at slightly different points in their own flow (never
+    before a trade result is reported, for instance), so acting on the
+    returned decision is left to them, via _act_on_flip_mode_decision.
+
+    Returns (decision, balance, tp_cap_threshold, connected_company):
+      - decision: 'blown', 'qualifies_for_removal', 'enter_flip_mode',
+        'exit_flip_mode', 'keep_flip_mode', 'keep_normal', or 'failed'
+        (couldn't gather what's needed to evaluate at all -- see the
+        logged warning for why).
+      - balance: the balance just read, or None if decision is 'failed'.
+      - tp_cap_threshold: the current profit-goal ceiling for
+        take-profit capping -- the higher of running_equity_target and
+        the tier final (see _gather_flip_mode_inputs). None for
+        'blown'/'failed', since neither is ever going to place a trade
+        that would need it.
+    """
+    balance_info, connected_company = _read_balance_and_tier(
+        driver, tv_tab, company, portfolio, connected_company
+    )
+    if balance_info is None:
+        return 'failed', None, None, connected_company
+
+    balance = balance_info['current_balance']
+    if balance <= balance_info['tier']['min']:
+        driver.switch_to.window(web_tab)
+        if not _select_and_verify(driver, company, portfolio):
+            print(f"  [WARN] Could not safely select '{company} / {portfolio}' to remove it - "
+                  "will retry next cycle.")
+            return 'failed', balance, None, connected_company
+        return 'blown', balance, None, connected_company
+
+    inputs, connected_company = _gather_flip_mode_inputs(
+        driver, web_tab, tv_tab, company, portfolio, connected_company, balance_info=balance_info
+    )
+    if inputs is None:
+        return 'failed', balance, None, connected_company
+
+    decision, new_target, details = flip_mode.evaluate(
+        current_balance=balance,
+        starting_balance=inputs['starting_balance'],
+        tier_final=inputs['tier_final'],
+        running_equity_target=inputs['running_equity_target'],
+        in_flip_mode=inputs['in_flip_mode'],
+        days=inputs['days'],
+        min_profitable_days=config.FLIP_MODE_MIN_PROFITABLE_DAYS,
+        min_daily_profit=config.FLIP_MODE_MIN_DAILY_PROFIT,
+        consistency_divisor=config.FLIP_MODE_CONSISTENCY_DIVISOR,
+        since_date=inputs['since_date'],
+    )
+    _print_flip_mode_decision(company, portfolio, decision, new_target, details)
+    status.set_running_equity_target(company, portfolio, new_target)
+    return decision, balance, inputs['tp_cap_threshold'], connected_company
+
+
+def _act_on_flip_mode_decision(driver, company, portfolio, decision):
+    """Performs whichever live-page action `decision` (from
+    evaluate_account_for_removal) calls for -- remove_portfolio for
+    'blown'/'qualifies_for_removal', enable_flip_mode/disable_flip_mode
+    for 'enter_flip_mode'/'exit_flip_mode'. A no-op (returns True) for
+    'keep_flip_mode'/'keep_normal'/anything else.
+
+    Assumes the driver is already on TradingGenerator's tab with
+    company/portfolio selected -- true right after
+    evaluate_account_for_removal returns, which is the only place this is
+    called from.
+
+    Returns True unless a required Flip Mode click failed (remove_portfolio
+    itself doesn't report success/failure the same way, so 'blown'/
+    'qualifies_for_removal' always return True here)."""
+    if decision == 'blown':
+        print(f"  [WARN] '{company} / {portfolio}' balance is at/below its tier's minimum - "
+              "removing (blown).")
+        tg.remove_portfolio(driver, portfolio)
+        status.mark_portfolio_removed(company, portfolio, 'balance outside allowed range (blown)')
+        return True
+    if decision == 'qualifies_for_removal':
+        print(f"  '{company} / {portfolio}' qualifies for removal under Flip Mode's rules - removing.")
+        tg.remove_portfolio(driver, portfolio)
+        status.mark_portfolio_removed(company, portfolio, 'hit Flip Mode profit target')
+        return True
+    if decision == 'enter_flip_mode':
+        return tg.enable_flip_mode(driver, config.read_admin_code())
+    if decision == 'exit_flip_mode':
+        return tg.disable_flip_mode(driver, config.read_admin_code())
+    return True
+
+
 def _open_position(driver, web_tab, tv_tab, params, connected_company):
     """Connects/selects the right Tradovate account, runs the pre-trade
     balance check + TP adjustment, and places the order for `params`
     (already known to be eligible -- see check_eligibility).
 
-    Deliberately does *not* report Not Taken to TradingGenerator on failure
-    -- each portfolio has its own independent "Trade Result" field (even
-    within a multi-portfolio signal, see read_eval_portfolios), so the
-    caller reports Not Taken itself, on the specific portfolio that failed,
-    rather than this function guessing at which one to select. The one
-    exception is a portfolio whose balance is already outside its allowed
-    range -- that removal is independent of this signal and happens
-    regardless.
+    Deliberately does *not* report Not Taken to TradingGenerator on failure,
+    nor act on a 'blown'/'qualifies_for_removal' decision by actually
+    removing the portfolio -- each portfolio has its own independent
+    "Trade Result" field (even within a multi-portfolio signal, see
+    read_eval_portfolios), so the caller reports Not Taken itself, on the
+    specific portfolio that failed, rather than this function guessing at
+    which one to select. Removal is deliberately left to the caller too,
+    and deliberately left for *after* that Not Taken report: a signal was
+    already generated for this portfolio before this was ever called (see
+    run_web_loop_multi), and if it's a company's only portfolio,
+    TradingGenerator can silently refuse to delete it at all -- reporting
+    Not Taken first means that signal always gets resolved regardless of
+    whether the removal itself goes on to succeed.
 
     Returns (outcome, connected_company, ledger_entry):
       - outcome: 'opened' (ledger_entry is the dict to store in
@@ -373,9 +727,13 @@ def _open_position(driver, web_tab, tv_tab, params, connected_company):
         should be quarantined until the next session), 'daily_profit_limit_reached'
         / 'daily_loss_limit_reached' (the account already hit
         config.DAILY_PROFIT_LIMIT/DAILY_LOSS_LIMIT -- also quarantine until
-        the next session, no trade attempted), or 'failed' (some other
-        failure, no quarantine implied). ledger_entry is None unless
-        outcome is 'opened'.
+        the next session, no trade attempted), 'blown' / 'qualifies_for_removal'
+        (the account needs removing under the same rules
+        evaluate_account_for_removal/_act_on_flip_mode_decision use
+        elsewhere -- the caller must report Not Taken *then* call
+        _act_on_flip_mode_decision itself with this outcome), or 'failed'
+        (some other failure, no quarantine implied). ledger_entry is None
+        unless outcome is 'opened'.
     """
     company = params['company']
     portfolio = params['portfolio']
@@ -392,21 +750,25 @@ def _open_position(driver, web_tab, tv_tab, params, connected_company):
         print(f"  [FAIL] Could not select Tradovate account '{portfolio}'.")
         return 'failed', connected_company, None
 
-    needs_removal, balance, tier_size, tier_range = trading.account_needs_removal(driver, params['account_type'])
-    status.update_portfolio(company, portfolio, balance=balance, tier_size=tier_size, tier_range=tier_range)
-    if needs_removal:
-        print(f"  [WARN] Account balance already outside its allowed range - "
-              f"removing '{portfolio}' instead of trading.")
-        driver.switch_to.window(web_tab)
-        if _select_and_verify(driver, company, portfolio):
-            tg.remove_portfolio(driver, portfolio)
-            status.mark_portfolio_removed(company, portfolio, 'balance outside allowed range (blown/hit target)')
-        else:
-            print(f"  [WARN] Could not safely select '{company} / {portfolio}' to remove it - "
-                  "will retry the next time it's attempted.")
+    decision, balance, tp_cap_threshold, connected_company = evaluate_account_for_removal(
+        driver, web_tab, tv_tab, company, portfolio, connected_company
+    )
+    if decision == 'failed':
+        print(f"  [FAIL] Could not evaluate '{company} / {portfolio}' before trading.")
         return 'failed', connected_company, None
+    status.update_portfolio(company, portfolio, balance=balance)
 
+    if decision in ('blown', 'qualifies_for_removal'):
+        print(f"  [WARN] '{company} / {portfolio}' needs removing "
+              f"({'balance outside its allowed range' if decision == 'blown' else 'hit its Flip Mode profit target'}) "
+              "instead of trading -- reporting Not Taken first, then removing.")
+        return decision, connected_company, None
+
+    _act_on_flip_mode_decision(driver, company, portfolio, decision)
     status.mark_portfolio_available(company, portfolio)
+    # evaluate_account_for_removal leaves the driver on web_tab -- back to
+    # tv_tab for the rest of this (Tradovate balance/order placement).
+    driver.switch_to.window(tv_tab)
 
     total_pl = None
     daily_limit_configured = config.DAILY_PROFIT_LIMIT is not None or config.DAILY_LOSS_LIMIT is not None
@@ -444,7 +806,7 @@ def _open_position(driver, web_tab, tv_tab, params, connected_company):
             return 'daily_loss_limit_reached', connected_company, None
 
     tp_ticks_after_balance_cap = trading.adjust_tp_for_max_balance(
-        balance, params['tp_ticks'], params['tp_dollars'], tier_range['max']
+        balance, params['tp_ticks'], params['tp_dollars'], tp_cap_threshold
     )
     # Independently derived from the *original*, unadjusted ticks/dollars
     # (not tp_ticks_after_balance_cap) -- each capping function computes its
@@ -1003,6 +1365,7 @@ def run_web_loop_multi(driver, max_positions_per_company=None, command_name="web
                     max_positions_per_company=max_positions_per_company,
                     external_open_accounts=external_open_accounts,
                 )
+                removal_decision = None
                 if portfolio_eligibility == 'eligible':
                     portfolio_params = dict(params, portfolio=portfolio)
                     open_outcome, connected_company, entry = _open_position(
@@ -1023,6 +1386,12 @@ def run_web_loop_multi(driver, max_positions_per_company=None, command_name="web
                               f"(daily {limit_kind} limit reached).")
                         quarantined.add((company, portfolio))
                         status.mark_portfolio_unavailable(company, portfolio, open_outcome)
+                    elif open_outcome in ('blown', 'qualifies_for_removal'):
+                        # Reported first, below (same as every other
+                        # non-'opened' outcome) -- removal itself only
+                        # happens after that, see _open_position's own
+                        # docstring for why the order matters here.
+                        removal_decision = open_outcome
                     else:
                         print(f"  [FAIL] Could not open '{company} / {portfolio}'.")
                 else:
@@ -1034,6 +1403,9 @@ def run_web_loop_multi(driver, max_positions_per_company=None, command_name="web
                 # Not Taken on this portfolio's own field.
                 print(f"  Reporting Trade Not Taken for '{company} / {portfolio}'.")
                 _report_not_taken_for(portfolio)
+
+                if removal_decision is not None:
+                    _act_on_flip_mode_decision(driver, company, portfolio, removal_decision)
 
             if opened_any:
                 consecutive_failures = 0

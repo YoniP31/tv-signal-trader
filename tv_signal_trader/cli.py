@@ -152,11 +152,11 @@ def _run_test_menu(driver, tv_tab, hide_tg_window=None, relaunch_browser=None):
 
     def _test_enable_flip_mode():
         _tg_tab()
-        tg.enable_flip_mode(driver, config.TRADINGGENERATOR_ADMIN_CODE)
+        tg.enable_flip_mode(driver, config.read_admin_code())
 
     def _test_disable_flip_mode():
         _tg_tab()
-        tg.disable_flip_mode(driver, config.TRADINGGENERATOR_ADMIN_CODE)
+        tg.disable_flip_mode(driver, config.read_admin_code())
 
     def _test_second_withdrawal_status():
         _tg_tab()
@@ -165,7 +165,37 @@ def _run_test_menu(driver, tv_tab, hide_tg_window=None, relaunch_browser=None):
 
     def _test_mark_second_withdrawal():
         _tg_tab()
-        tg.mark_second_withdrawal(driver, config.TRADINGGENERATOR_ADMIN_CODE)
+        tg.mark_second_withdrawal(driver, config.read_admin_code())
+
+    def _test_flip_mode_dry_run():
+        web_tab = _tg_tab()
+        default_company, default_portfolio = tg.read_active_company_portfolio(driver)
+        company = input(f"  Company [default: {default_company or '(none selected)'}]: ").strip() or default_company
+        portfolio = (
+            input(f"  Portfolio [default: {default_portfolio or '(none selected)'}]: ").strip()
+            or default_portfolio
+        )
+        if not company or not portfolio:
+            print("  [FAIL] No company/portfolio to evaluate (nothing selected and none entered).")
+            return
+        decision, new_target, inputs, _connected_company = multi_signal_source.evaluate_flip_mode(
+            driver, web_tab, tv_tab, company, portfolio, None
+        )
+        if decision is None:
+            print("  [FAIL] Could not gather everything needed to evaluate this account - see warnings above.")
+            return
+        print(f"\n  --- DRY RUN for '{company} / {portfolio}' -- no action taken ---")
+        print(f"  Account type: {inputs['account_type']}, tier size: {inputs['tier_size']}")
+        print(f"  Balance: {inputs['current_balance']:.2f}")
+        print(f"  Running equity target: {inputs['running_equity_target']:.2f} "
+              f"(tier initial: {inputs['tier_initial']:.2f}, tier final: {inputs['tier_final']:.2f})")
+        print(f"  Currently in Flip Mode: {inputs['in_flip_mode']}")
+        print(f"  Cycle starting balance: {inputs['starting_balance']:.2f} "
+              f"{'(this cycle -- a past withdrawal was detected)' if inputs['since_date'] else '(the tier size -- still on its first cycle)'}")
+        print(f"  Cycle start date: {inputs['since_date'] or '(none set - using the whole history)'}")
+        print(f"  Recorded days: {len(inputs['days'])}")
+        print(f"  Decision: {decision}")
+        print(f"  New running equity target (not saved): {new_target:.2f}")
 
     test_commands = {
         "buy": (
@@ -258,6 +288,14 @@ def _run_test_menu(driver, tv_tab, hide_tg_window=None, relaunch_browser=None):
             "reads as marked, refuses to click at all if its state can't be read (a single toggle "
             "button, same as Flip Mode -- clicking it while already marked cancels it back off).",
             _test_mark_second_withdrawal,
+        ),
+        "flip_mode_dry_run": (
+            "Read-only -- no button clicks, no remove_portfolio, no status.json writes. Reads a "
+            "real account's live balance/type/Flip-Mode-state plus its persisted equity history, "
+            "runs it through the Flip Mode decision logic, and prints what it *would* do -- "
+            "defaults to whatever's currently selected in TradingGenerator, or asks for a "
+            "company/portfolio.",
+            _test_flip_mode_dry_run,
         ),
     }
     if relaunch_browser is not None:

@@ -47,8 +47,8 @@ class OpenPositionDailyPnlLimitTests(unittest.TestCase):
     def test_refuses_to_trade_when_total_pl_cannot_be_read(self):
         with patch.object(ms, "_ensure_tradovate_connection", return_value=PARAMS['company']), \
              patch.object(ms.trading, "select_tradovate_account", return_value=True), \
-             patch.object(ms.trading, "account_needs_removal",
-                           return_value=(False, 25000, "25k", {"min": 23000, "max": 27000})), \
+             patch.object(ms, "evaluate_account_for_removal",
+                           return_value=("keep_normal", 25000, 27000, PARAMS['company'])), \
              patch.object(ms.status, "update_portfolio"), \
              patch.object(ms.status, "mark_portfolio_available"), \
              patch.object(ms.trading, "load_chart_for_signal"), \
@@ -73,8 +73,8 @@ class OpenPositionDailyPnlLimitTests(unittest.TestCase):
         # even gets a chance to be read.
         with patch.object(ms, "_ensure_tradovate_connection", return_value=PARAMS['company']), \
              patch.object(ms.trading, "select_tradovate_account", return_value=True), \
-             patch.object(ms.trading, "account_needs_removal",
-                           return_value=(False, 25000, "25k", {"min": 23000, "max": 27000})), \
+             patch.object(ms, "evaluate_account_for_removal",
+                           return_value=("keep_normal", 25000, 27000, PARAMS['company'])), \
              patch.object(ms.status, "update_portfolio"), \
              patch.object(ms.status, "mark_portfolio_available"), \
              patch.object(ms.trading, "load_chart_for_signal"), \
@@ -93,8 +93,8 @@ class OpenPositionDailyPnlLimitTests(unittest.TestCase):
     def test_trades_normally_when_total_pl_reads_successfully(self):
         with patch.object(ms, "_ensure_tradovate_connection", return_value=PARAMS['company']), \
              patch.object(ms.trading, "select_tradovate_account", return_value=True), \
-             patch.object(ms.trading, "account_needs_removal",
-                           return_value=(False, 25000, "25k", {"min": 23000, "max": 27000})), \
+             patch.object(ms, "evaluate_account_for_removal",
+                           return_value=("keep_normal", 25000, 27000, PARAMS['company'])), \
              patch.object(ms.status, "update_portfolio"), \
              patch.object(ms.status, "mark_portfolio_available"), \
              patch.object(ms.trading, "load_chart_for_signal"), \
@@ -116,8 +116,8 @@ class OpenPositionDailyPnlLimitTests(unittest.TestCase):
         # must refuse outright rather than reaching the capping logic.
         with patch.object(ms, "_ensure_tradovate_connection", return_value=PARAMS['company']), \
              patch.object(ms.trading, "select_tradovate_account", return_value=True), \
-             patch.object(ms.trading, "account_needs_removal",
-                           return_value=(False, 25000, "25k", {"min": 23000, "max": 27000})), \
+             patch.object(ms, "evaluate_account_for_removal",
+                           return_value=("keep_normal", 25000, 27000, PARAMS['company'])), \
              patch.object(ms.status, "update_portfolio"), \
              patch.object(ms.status, "mark_portfolio_available"), \
              patch.object(ms.trading, "load_chart_for_signal"), \
@@ -139,8 +139,8 @@ class OpenPositionDailyPnlLimitTests(unittest.TestCase):
         config.DAILY_LOSS_LIMIT = None
         with patch.object(ms, "_ensure_tradovate_connection", return_value=PARAMS['company']), \
              patch.object(ms.trading, "select_tradovate_account", return_value=True), \
-             patch.object(ms.trading, "account_needs_removal",
-                           return_value=(False, 25000, "25k", {"min": 23000, "max": 27000})), \
+             patch.object(ms, "evaluate_account_for_removal",
+                           return_value=("keep_normal", 25000, 27000, PARAMS['company'])), \
              patch.object(ms.status, "update_portfolio"), \
              patch.object(ms.status, "mark_portfolio_available"), \
              patch.object(ms.trading, "load_chart_for_signal"), \

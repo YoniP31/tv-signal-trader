@@ -98,5 +98,51 @@ class EnvFileRoundTripTests(unittest.TestCase):
         self.assertNotIn("legacy_plain_pass", raw)
 
 
+class ReadEnvValueFromDiskTests(unittest.TestCase):
+    """read_env_value_from_disk/read_admin_code -- the one config value
+    deliberately *not* cached, so it can be rotated on disk and take
+    effect immediately even while web_multi holds the '>' prompt (and so
+    'setup') hostage for its entire run."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.env_path = os.path.join(self._tmpdir.name, ".env")
+        self._env_file_patcher = patch.object(config, "ENV_FILE", self.env_path)
+        self._env_file_patcher.start()
+        self.addCleanup(self._env_file_patcher.stop)
+
+    def _write_env(self, content):
+        with open(self.env_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+    def test_reads_a_plain_unobscured_value_written_by_hand(self):
+        # No "b64:" prefix needed -- a value hand-typed straight into
+        # .env (e.g. to deliberately break it for a live test) works
+        # exactly like an already-obscured one.
+        self._write_env("TRADINGGENERATOR_ADMIN_CODE=wrong-code-123\n")
+        self.assertEqual(config.read_admin_code(), "wrong-code-123")
+
+    def test_reads_a_properly_obscured_value(self):
+        config.set_env_values({"TRADINGGENERATOR_ADMIN_CODE": "the-real-code"})
+        self.assertEqual(config.read_admin_code(), "the-real-code")
+
+    def test_reflects_a_hand_edit_without_reloading_the_cached_env(self):
+        config.set_env_values({"TRADINGGENERATOR_ADMIN_CODE": "original-code"})
+        # config._env (and config.TRADINGGENERATOR_ADMIN_CODE) now cache
+        # "original-code" -- simulate hand-editing .env directly on disk,
+        # bypassing set_env_values entirely, the way a user would to test
+        # a wrong code live without restarting.
+        self._write_env("TRADINGGENERATOR_ADMIN_CODE=edited-on-disk\n")
+        # The cached module-level constant is unaffected...
+        self.assertEqual(config.TRADINGGENERATOR_ADMIN_CODE, "original-code")
+        # ...but a fresh read picks up the on-disk edit immediately.
+        self.assertEqual(config.read_admin_code(), "edited-on-disk")
+
+    def test_missing_key_returns_empty_string(self):
+        self._write_env("SOME_OTHER_KEY=value\n")
+        self.assertEqual(config.read_admin_code(), "")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -164,6 +164,36 @@ def get_env_value(key, default=""):
     return _env.get(key, default)
 
 
+def read_env_value_from_disk(key, default=""):
+    """Reads a single .env value straight from disk, bypassing the
+    cached `_env` entirely -- unlike every other config.* value (loaded
+    once at startup, refreshed only via set_env_values/the 'setup'
+    command), this always reflects whatever's on disk *right now*.
+
+    Meant for values worth rotating without restarting the whole app --
+    e.g. TRADINGGENERATOR_ADMIN_CODE (see read_admin_code below): while
+    web_multi is running, it holds the '>' prompt (and so 'setup')
+    hostage for its entire run, so a cached value can't be changed any
+    other way. Correctly un-obscures a key in _OBSCURED_ENV_KEYS, same as
+    a normal load -- and since _unobscure only decodes a value that
+    actually has the "b64:" prefix, a plain, un-obscured value written by
+    hand works too, no encoding needed.
+
+    Not used for most settings deliberately -- re-reading the whole file
+    on every access would be needless disk I/O for values that
+    essentially never change mid-run.
+    """
+    return _load_env_file(ENV_FILE).get(key, default)
+
+
+def read_admin_code():
+    """TRADINGGENERATOR_ADMIN_CODE, read fresh from .env every call (see
+    read_env_value_from_disk) -- so it can be rotated on disk and take
+    effect on the very next Flip Mode/Second Withdrawal button click,
+    with no restart needed."""
+    return read_env_value_from_disk("TRADINGGENERATOR_ADMIN_CODE")
+
+
 def _parse_time(raw):
     """Parses a "HH:MM" 24-hour string into a datetime.time, or None if
     it's missing/malformed."""
