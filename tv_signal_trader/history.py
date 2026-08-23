@@ -4,36 +4,46 @@ persisted equity history (status.get_equity_history) -- a list of
 {date, equity} dicts, oldest first.
 
 A day's profit isn't stored directly -- it's always the delta from the
-previous day's equity (or from `starting_balance` for the very first
-recorded day), computed here rather than at write time, so there's a
-single place responsible for what "a day's profit" means. Deliberately
-takes plain lists/numbers rather than reading status.json itself, so this
-stays trivial to unit test with fixture data and has no live-DOM
-dependency at all.
+previous *included* day's equity (or from `starting_balance` for the
+first included day -- see daily_profits' own docstring for what that
+means once a `since_date` cycle cutoff is involved), computed here
+rather than at write time, so there's a single place responsible for
+what "a day's profit" means. Deliberately takes plain lists/numbers
+rather than reading status.json itself, so this stays trivial to unit
+test with fixture data and has no live-DOM dependency at all.
 """
 
 
 def daily_profits(days, starting_balance, since_date=None):
-    """[(date, profit), ...] for every recorded day, oldest first, where
-    profit is the equity delta from the previous day (or from
-    `starting_balance` for the first recorded day).
+    """[(date, profit), ...] for every day on/after `since_date` (all of
+    them, oldest first, if since_date is None), where profit is the
+    equity delta from the previous *included* day -- or from
+    `starting_balance` for the first included day.
 
-    `since_date` (inclusive), if given, restricts the *returned* days to
-    that date onward -- for Flip Mode's per-withdrawal-cycle tracking
-    (see the Flip Mode plan), where consistency/day-count should only
-    look at days since the account's current cycle started. The excluded
-    earlier days are still used to compute the first included day's delta
-    correctly (against its own actual previous day, not `starting_balance`
-    again) -- only the output is filtered, not the running equity used to
-    compute it.
+    `since_date` (inclusive) is Flip Mode's per-withdrawal-cycle tracking
+    (see the Flip Mode plan): once an account is re-added to
+    TradingGenerator after a detected withdrawal, consistency/day-count
+    must measure profit from the equity right after that withdrawal, not
+    from the account's original onboarding balance -- a withdrawal isn't a
+    trading loss and must never be counted as one. So `starting_balance`
+    here needs to be *that* cycle's starting equity (the caller's
+    responsibility to pass the right one for since_date), and the day
+    right at/after since_date resets against it directly rather than
+    continuing the chain from whatever the last pre-cutoff day happened to
+    record -- days before since_date are skipped entirely, not used to
+    compute anything.
     """
     profits = []
     previous_equity = starting_balance
+    baseline_pending = since_date is not None
     for day in days:
+        if since_date is not None and day["date"] < since_date:
+            continue
+        if baseline_pending:
+            previous_equity = starting_balance
+            baseline_pending = False
         profits.append((day["date"], day["equity"] - previous_equity))
         previous_equity = day["equity"]
-    if since_date is not None:
-        profits = [(date, profit) for date, profit in profits if date >= since_date]
     return profits
 
 

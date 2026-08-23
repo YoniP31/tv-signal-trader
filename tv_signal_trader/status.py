@@ -230,5 +230,26 @@ def get_cycle_start_date(company, account):
     return data.get("account_history", {}).get(_account_key(company, account), {}).get("cycle_start_date")
 
 
+def set_cycle_starting_balance(company, account, balance):
+    """Persists the equity `account`'s current withdrawal cycle actually
+    started at -- the baseline history.py's consistency/day-count helpers
+    measure profit from (via their `since_date`-paired `starting_balance`
+    parameter) for any cycle after the first. A withdrawal isn't a trading
+    loss: consistency must be judged from the equity right after it (e.g.
+    right after re-adding to TradingGenerator post-withdrawal -- see the
+    Flip Mode plan's Phase 3), never from the account's original $50K/$25K
+    onboarding balance once a cycle has actually reset. `balance` may be
+    None to clear it."""
+    return _update_account_history(company, account, cycle_starting_balance=balance)
+
+
+def get_cycle_starting_balance(company, account):
+    """This account's current cycle's starting balance, or None if it's
+    still on its first cycle (never reset) -- the caller falls back to
+    the account's true original tier size in that case."""
+    data = _read()
+    return data.get("account_history", {}).get(_account_key(company, account), {}).get("cycle_starting_balance")
+
+
 def timestamp():
     return _now()

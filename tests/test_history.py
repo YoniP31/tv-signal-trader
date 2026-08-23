@@ -29,18 +29,21 @@ class DailyProfitsTests(unittest.TestCase):
             [("2026-08-01", 1000), ("2026-08-02", -500), ("2026-08-03", 2500)],
         )
 
-    def test_since_date_filters_the_output_but_not_the_deltas_feeding_it(self):
+    def test_since_date_resets_the_baseline_at_the_first_included_day(self):
         days = [
             {"date": "2026-08-01", "equity": 51000},
             {"date": "2026-08-02", "equity": 50500},
             {"date": "2026-08-03", "equity": 53000},
         ]
-        # Day 2 (2026-08-02) is excluded, but day 3's delta is still
-        # computed against day 2's real equity (50500), not re-based
-        # against starting_balance just because day 2 got filtered out.
+        # Days 1-2 are filtered out, making day 3 the first included day --
+        # its delta resets against starting_balance (50000) directly, not
+        # against day 2's actual equity (50500). A withdrawal between
+        # cycles isn't a trading loss and must never leak into this delta,
+        # so continuing the old chain here would be wrong (it would give
+        # 2500 instead of the correct 3000).
         self.assertEqual(
             history.daily_profits(days, 50000, since_date="2026-08-03"),
-            [("2026-08-03", 2500)],
+            [("2026-08-03", 3000)],
         )
 
     def test_since_date_before_every_day_changes_nothing(self):
@@ -72,11 +75,15 @@ class BestDayProfitTests(unittest.TestCase):
         # Day 1: -1000, Day 2: -500.
         self.assertEqual(history.best_day_profit(days, 50000), -500)
 
-    def test_since_date_excludes_an_earlier_bigger_day(self):
+    def test_since_date_excludes_an_earlier_days_contribution_entirely(self):
         days = [
-            {"date": "2026-08-01", "equity": 55000},   # +5000 (excluded)
-            {"date": "2026-08-02", "equity": 55500},   # +500 (included)
+            {"date": "2026-08-01", "equity": 100000},  # a prior cycle's own huge day -- excluded
+            {"date": "2026-08-02", "equity": 50500},   # new cycle's first day: +500
+            {"date": "2026-08-03", "equity": 51000},   # +500
         ]
+        # Without since_date, day 1's implicit +50000 (from starting_balance)
+        # would dominate. With it, only the two post-cutoff days -- each
+        # +500 against the reset baseline -- are ever considered.
         self.assertEqual(history.best_day_profit(days, 50000, since_date="2026-08-02"), 500)
 
 
@@ -91,14 +98,17 @@ class TotalProfitTests(unittest.TestCase):
         ]
         self.assertEqual(history.total_profit(days, 50000), 4000)
 
-    def test_since_date_is_profit_since_that_cutoff_not_all_time(self):
+    def test_since_date_measures_from_the_cycles_own_starting_balance(self):
         days = [
-            {"date": "2026-08-01", "equity": 53000},   # a prior cycle's +3000
-            {"date": "2026-08-02", "equity": 53500},   # new cycle: +500
-            {"date": "2026-08-03", "equity": 54200},   # new cycle: +700
+            {"date": "2026-08-01", "equity": 60000},   # a prior cycle's own day -- irrelevant once excluded
+            {"date": "2026-08-02", "equity": 51000},   # new cycle's first day (e.g. right after a withdrawal)
+            {"date": "2026-08-03", "equity": 51700},
         ]
-        # Since 2026-08-02: 500 + 700 = 1200, not 54200 - 50000 = 4200.
-        self.assertEqual(history.total_profit(days, 50000, since_date="2026-08-02"), 1200)
+        # starting_balance here (50500) is the new cycle's own starting
+        # equity -- neither day 1's value nor the account's original
+        # onboarding balance. Total profit since the cutoff telescopes to
+        # the latest equity minus *that*: 51700 - 50500 = 1200.
+        self.assertEqual(history.total_profit(days, 50500, since_date="2026-08-02"), 1200)
 
 
 class ProfitableDayCountTests(unittest.TestCase):
@@ -120,11 +130,17 @@ class ProfitableDayCountTests(unittest.TestCase):
 
     def test_since_date_excludes_an_earlier_qualifying_day(self):
         days = [
-            {"date": "2026-08-01", "equity": 50500},   # +500, qualifies (excluded)
-            {"date": "2026-08-02", "equity": 50600},   # +100, below min
-            {"date": "2026-08-03", "equity": 51000},   # +400, qualifies
+            {"date": "2026-08-01", "equity": 49000},   # excluded -- a lower prior-cycle day
+            {"date": "2026-08-02", "equity": 50200},   # new cycle's first day
         ]
-        self.assertEqual(history.profitable_day_count(days, 50000, 250, since_date="2026-08-02"), 1)
+        # If this wrongly chained from day 1's actual equity (49000), day
+        # 2's delta would be 1200 -- comfortably over the 250 minimum.
+        # Reset against the new cycle's own starting_balance (50000)
+        # instead, it's only 200 -- correctly not profitable enough to
+        # count. This is exactly the kind of mistake that would let a
+        # withdrawal between cycles get misread as a huge trading loss on
+        # the day right after it.
+        self.assertEqual(history.profitable_day_count(days, 50000, 250, since_date="2026-08-02"), 0)
 
 
 if __name__ == "__main__":

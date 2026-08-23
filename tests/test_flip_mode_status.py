@@ -1,7 +1,8 @@
 """Covers status.py's Flip Mode persistence: set_running_equity_target/
-get_running_equity_target and set_cycle_start_date/get_cycle_start_date --
-the per-account state a restart shouldn't lose track of mid-state-machine
-(see the Flip Mode plan). Run with:
+get_running_equity_target, set_cycle_start_date/get_cycle_start_date, and
+set_cycle_starting_balance/get_cycle_starting_balance -- the per-account
+state a restart shouldn't lose track of mid-state-machine (see the Flip
+Mode plan). Run with:
 
     python -m unittest tests.test_flip_mode_status -v
 """
@@ -70,6 +71,25 @@ class CycleStartDateTests(_TempStatusFileTestCase):
         status.set_cycle_start_date("Apex Trader Funding", "PAAPEX0001", "2026-08-01")
         status.set_cycle_start_date("Apex Trader Funding", "PAAPEX0001", "2026-08-15")
         self.assertEqual(status.get_cycle_start_date("Apex Trader Funding", "PAAPEX0001"), "2026-08-15")
+
+
+class CycleStartingBalanceTests(_TempStatusFileTestCase):
+    def test_defaults_to_none_for_an_unknown_account(self):
+        self.assertIsNone(status.get_cycle_starting_balance("Apex Trader Funding", "PAAPEX0001"))
+
+    def test_set_then_get_round_trips(self):
+        status.set_cycle_starting_balance("Apex Trader Funding", "PAAPEX0001", 50700.0)
+        self.assertEqual(status.get_cycle_starting_balance("Apex Trader Funding", "PAAPEX0001"), 50700.0)
+
+    def test_a_later_withdrawal_replaces_the_earlier_starting_balance(self):
+        status.set_cycle_starting_balance("Apex Trader Funding", "PAAPEX0001", 50700.0)
+        status.set_cycle_starting_balance("Apex Trader Funding", "PAAPEX0001", 54200.0)
+        self.assertEqual(status.get_cycle_starting_balance("Apex Trader Funding", "PAAPEX0001"), 54200.0)
+
+    def test_can_be_cleared_with_none(self):
+        status.set_cycle_starting_balance("Apex Trader Funding", "PAAPEX0001", 50700.0)
+        status.set_cycle_starting_balance("Apex Trader Funding", "PAAPEX0001", None)
+        self.assertIsNone(status.get_cycle_starting_balance("Apex Trader Funding", "PAAPEX0001"))
 
 
 if __name__ == "__main__":
