@@ -107,6 +107,55 @@ class ValidateEnvTests(_TempEnvFileTestCase):
         problems = config.validate_env()
         self.assertEqual([p[0] for p in problems], ["ACCOUNT_25K_MAX_BALANCE_EVAL"])
 
+    def test_malformed_flip_mode_initial_final_balance_tiers_are_flagged(self):
+        self._write_env(
+            "ACCOUNT_50K_MAX_BALANCE_INITIAL_LIVE=lots\n"
+            "ACCOUNT_50K_MAX_BALANCE_FINAL_LIVE=also lots\n"
+        )
+        problems = config.validate_env()
+        keys = [p[0] for p in problems]
+        self.assertIn("ACCOUNT_50K_MAX_BALANCE_INITIAL_LIVE", keys)
+        self.assertIn("ACCOUNT_50K_MAX_BALANCE_FINAL_LIVE", keys)
+
+    def test_well_formed_flip_mode_settings_have_no_problems(self):
+        self._write_env(
+            "ACCOUNT_50K_MAX_BALANCE_INITIAL_LIVE=53000\n"
+            "ACCOUNT_50K_MAX_BALANCE_FINAL_LIVE=53500\n"
+            "FLIP_MODE_MIN_PROFITABLE_DAYS=5\n"
+            "FLIP_MODE_MIN_DAILY_PROFIT=200\n"
+            "FLIP_MODE_CONSISTENCY_DIVISOR=0.5\n"
+        )
+        self.assertEqual(config.validate_env(), [])
+
+    def test_non_numeric_flip_mode_min_profitable_days_is_flagged(self):
+        self._write_env("FLIP_MODE_MIN_PROFITABLE_DAYS=five\n")
+        problems = config.validate_env()
+        self.assertEqual([p[0] for p in problems], ["FLIP_MODE_MIN_PROFITABLE_DAYS"])
+
+    def test_zero_flip_mode_min_profitable_days_is_flagged_as_not_positive(self):
+        self._write_env("FLIP_MODE_MIN_PROFITABLE_DAYS=0\n")
+        problems = config.validate_env()
+        self.assertEqual([p[0] for p in problems], ["FLIP_MODE_MIN_PROFITABLE_DAYS"])
+
+    def test_non_numeric_flip_mode_consistency_divisor_is_flagged(self):
+        self._write_env("FLIP_MODE_CONSISTENCY_DIVISOR=half\n")
+        problems = config.validate_env()
+        self.assertEqual([p[0] for p in problems], ["FLIP_MODE_CONSISTENCY_DIVISOR"])
+
+    def test_zero_flip_mode_consistency_divisor_is_flagged(self):
+        self._write_env("FLIP_MODE_CONSISTENCY_DIVISOR=0\n")
+        problems = config.validate_env()
+        self.assertEqual([p[0] for p in problems], ["FLIP_MODE_CONSISTENCY_DIVISOR"])
+
+    def test_flip_mode_consistency_divisor_over_one_is_flagged(self):
+        self._write_env("FLIP_MODE_CONSISTENCY_DIVISOR=1.5\n")
+        problems = config.validate_env()
+        self.assertEqual([p[0] for p in problems], ["FLIP_MODE_CONSISTENCY_DIVISOR"])
+
+    def test_flip_mode_consistency_divisor_of_exactly_one_is_not_flagged(self):
+        self._write_env("FLIP_MODE_CONSISTENCY_DIVISOR=1\n")
+        self.assertEqual(config.validate_env(), [])
+
 
 class SafeParsingFallbackTests(_TempEnvFileTestCase):
     """_reload_env() must never crash on a malformed value -- it falls back
@@ -133,6 +182,64 @@ class SafeParsingFallbackTests(_TempEnvFileTestCase):
     def test_malformed_time_leaves_the_window_unset_rather_than_crashing(self):
         self._write_env("SESSION_START_TIME=bogus\nSESSION_END_TIME=17:00\n")
         self.assertIsNone(config.SESSION_START_TIME)
+
+    def test_malformed_flip_mode_min_profitable_days_falls_back_to_the_default(self):
+        self._write_env("FLIP_MODE_MIN_PROFITABLE_DAYS=five\n")
+        self.assertEqual(
+            config.FLIP_MODE_MIN_PROFITABLE_DAYS, config._DEFAULT_FLIP_MODE_MIN_PROFITABLE_DAYS
+        )
+
+    def test_malformed_flip_mode_consistency_divisor_falls_back_to_the_default(self):
+        self._write_env("FLIP_MODE_CONSISTENCY_DIVISOR=half\n")
+        self.assertEqual(
+            config.FLIP_MODE_CONSISTENCY_DIVISOR, config._DEFAULT_FLIP_MODE_CONSISTENCY_DIVISOR
+        )
+
+    def test_malformed_flip_mode_initial_final_tiers_fall_back_to_their_defaults(self):
+        self._write_env(
+            "ACCOUNT_50K_MAX_BALANCE_INITIAL_LIVE=nope\n"
+            "ACCOUNT_50K_MAX_BALANCE_FINAL_LIVE=nope\n"
+        )
+        self.assertEqual(
+            config.ACCOUNT_BALANCE_TIERS[50000]['max_initial']['LIVE'],
+            config._DEFAULT_ACCOUNT_TIER_MAX_INITIAL['LIVE'][50000],
+        )
+        self.assertEqual(
+            config.ACCOUNT_BALANCE_TIERS[50000]['max_final']['LIVE'],
+            config._DEFAULT_ACCOUNT_TIER_MAX_FINAL['LIVE'][50000],
+        )
+
+
+class FlipModeTierStructureTests(_TempEnvFileTestCase):
+    """ACCOUNT_BALANCE_TIERS gains max_initial/max_final alongside the
+    existing 'max' -- additive, not a replacement, so today's
+    account_needs_removal/adjust_tp_for_max_balance (which read only
+    'max') are completely unaffected by any of this."""
+
+    def test_default_initial_and_final_values_match_the_confirmed_table(self):
+        self._write_env("")
+        tiers = config.ACCOUNT_BALANCE_TIERS
+        self.assertEqual(tiers[50000]['max_initial']['LIVE'], 53000)
+        self.assertEqual(tiers[50000]['max_final']['LIVE'], 53500)
+        self.assertEqual(tiers[25000]['max_initial']['LIVE'], 26500)
+        self.assertEqual(tiers[25000]['max_final']['LIVE'], 27000)
+        self.assertEqual(tiers[50000]['max_initial']['EVAL'], 52500)
+        self.assertEqual(tiers[50000]['max_final']['EVAL'], 53000)
+        self.assertEqual(tiers[25000]['max_initial']['EVAL'], 26000)
+        self.assertEqual(tiers[25000]['max_final']['EVAL'], 26500)
+
+    def test_existing_max_field_is_unaffected_by_the_new_fields(self):
+        self._write_env("")
+        self.assertEqual(config.ACCOUNT_BALANCE_TIERS[50000]['max']['LIVE'], 53500)
+        self.assertEqual(config.ACCOUNT_BALANCE_TIERS[50000]['max']['EVAL'], 53000)
+
+    def test_an_override_only_affects_its_own_field(self):
+        self._write_env("ACCOUNT_50K_MAX_BALANCE_INITIAL_LIVE=53100\n")
+        tiers = config.ACCOUNT_BALANCE_TIERS
+        self.assertEqual(tiers[50000]['max_initial']['LIVE'], 53100)
+        # 'max' and 'max_final' for the same tier/type are untouched.
+        self.assertEqual(tiers[50000]['max']['LIVE'], 53500)
+        self.assertEqual(tiers[50000]['max_final']['LIVE'], 53500)
 
 
 if __name__ == "__main__":

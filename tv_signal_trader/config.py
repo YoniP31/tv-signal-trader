@@ -108,6 +108,29 @@ _DEFAULT_ACCOUNT_TIER_MAX = {
     'LIVE': {25000: 27000, 50000: 53500},
 }
 
+# Flip Mode's own initial ("staged") and final equity targets (see the
+# Flip Mode plan), confirmed with the user -- additive alongside
+# _DEFAULT_ACCOUNT_TIER_MAX above, not a replacement for it: today's
+# account_needs_removal/adjust_tp_for_max_balance keep reading ['max']
+# exactly as before, untouched, until the Flip Mode state machine itself
+# is wired in to use these instead.
+_DEFAULT_ACCOUNT_TIER_MAX_INITIAL = {
+    'EVAL': {25000: 26000, 50000: 52500},
+    'LIVE': {25000: 26500, 50000: 53000},
+}
+_DEFAULT_ACCOUNT_TIER_MAX_FINAL = {
+    'EVAL': {25000: 26500, 50000: 53000},
+    'LIVE': {25000: 27000, 50000: 53500},
+}
+
+# Flip Mode's three qualifying conditions (see the Flip Mode plan) -- not
+# yet consulted by anything until the state machine itself is wired in.
+# Overridable via FLIP_MODE_MIN_PROFITABLE_DAYS/FLIP_MODE_MIN_DAILY_PROFIT/
+# FLIP_MODE_CONSISTENCY_DIVISOR in .env.
+_DEFAULT_FLIP_MODE_MIN_PROFITABLE_DAYS = 5
+_DEFAULT_FLIP_MODE_MIN_DAILY_PROFIT = 200
+_DEFAULT_FLIP_MODE_CONSISTENCY_DIVISOR = 0.5
+
 # When a trade's take-profit would push the account's balance past its max
 # (see trading.adjust_tp_for_max_balance), the TP is capped so the result
 # lands at max + a random buffer in this $ range instead -- looks more
@@ -203,6 +226,15 @@ def _check_positive_int(raw):
         raise ValueError('must be greater than 0, e.g. "3"')
 
 
+def _check_consistency_divisor(raw):
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ValueError('must be a plain number greater than 0 and at most 1, e.g. "0.5"')
+    if not (0 < value <= 1):
+        raise ValueError('must be greater than 0 and at most 1, e.g. "0.5"')
+
+
 def _balance_tier_field_specs():
     specs = []
     for size, default_min in _DEFAULT_ACCOUNT_TIER_MIN.items():
@@ -211,6 +243,16 @@ def _balance_tier_field_specs():
         for account_type, defaults in _DEFAULT_ACCOUNT_TIER_MAX.items():
             specs.append((
                 f"{prefix}_MAX_BALANCE_{account_type}", _check_float,
+                f'a dollar amount, e.g. "{defaults[size]:g}"',
+            ))
+        for account_type, defaults in _DEFAULT_ACCOUNT_TIER_MAX_INITIAL.items():
+            specs.append((
+                f"{prefix}_MAX_BALANCE_INITIAL_{account_type}", _check_float,
+                f'a dollar amount, e.g. "{defaults[size]:g}"',
+            ))
+        for account_type, defaults in _DEFAULT_ACCOUNT_TIER_MAX_FINAL.items():
+            specs.append((
+                f"{prefix}_MAX_BALANCE_FINAL_{account_type}", _check_float,
                 f'a dollar amount, e.g. "{defaults[size]:g}"',
             ))
     return specs
@@ -235,6 +277,18 @@ _ENV_FIELD_SPECS = _balance_tier_field_specs() + [
     ("DAILY_LOSS_LIMIT", _check_float, 'a dollar amount, e.g. "300"'),
     ("DAILY_PNL_CAP_BUFFER_MIN", _check_float, f'a dollar amount, e.g. "{_DEFAULT_DAILY_PNL_CAP_BUFFER_RANGE[0]:g}"'),
     ("DAILY_PNL_CAP_BUFFER_MAX", _check_float, f'a dollar amount, e.g. "{_DEFAULT_DAILY_PNL_CAP_BUFFER_RANGE[1]:g}"'),
+    (
+        "FLIP_MODE_MIN_PROFITABLE_DAYS", _check_positive_int,
+        f'a whole number, e.g. "{_DEFAULT_FLIP_MODE_MIN_PROFITABLE_DAYS}"',
+    ),
+    (
+        "FLIP_MODE_MIN_DAILY_PROFIT", _check_float,
+        f'a dollar amount, e.g. "{_DEFAULT_FLIP_MODE_MIN_DAILY_PROFIT:g}"',
+    ),
+    (
+        "FLIP_MODE_CONSISTENCY_DIVISOR", _check_consistency_divisor,
+        f'a number greater than 0 and at most 1, e.g. "{_DEFAULT_FLIP_MODE_CONSISTENCY_DIVISOR:g}"',
+    ),
 ]
 
 # (start_key, end_key, label) -- a window needs both ends set to mean
@@ -416,6 +470,7 @@ def _reload_env():
     global MAX_POSITIONS_PER_COMPANY
     global DAILY_PROFIT_LIMIT, DAILY_LOSS_LIMIT
     global DAILY_PNL_CAP_BUFFER_RANGE
+    global FLIP_MODE_MIN_PROFITABLE_DAYS, FLIP_MODE_MIN_DAILY_PROFIT, FLIP_MODE_CONSISTENCY_DIVISOR
     _env = _load_env_file(ENV_FILE)
     TRADINGGENERATOR_USERNAME = _env.get("TRADINGGENERATOR_USERNAME", "")
     TRADINGGENERATOR_PASSWORD = _env.get("TRADINGGENERATOR_PASSWORD", "")
@@ -447,7 +502,24 @@ def _reload_env():
         for account_type, defaults in _DEFAULT_ACCOUNT_TIER_MAX.items():
             default_max = defaults[size]
             max_by_type[account_type] = _safe_float(_env.get(f"{prefix}_MAX_BALANCE_{account_type}"), default_max)
-        ACCOUNT_BALANCE_TIERS[size] = {'min': min_val, 'max': max_by_type}
+        # Additive alongside 'max' above, not a replacement for it -- see
+        # _DEFAULT_ACCOUNT_TIER_MAX_INITIAL/_FINAL's own comment.
+        max_initial_by_type = {}
+        for account_type, defaults in _DEFAULT_ACCOUNT_TIER_MAX_INITIAL.items():
+            default_max = defaults[size]
+            max_initial_by_type[account_type] = _safe_float(
+                _env.get(f"{prefix}_MAX_BALANCE_INITIAL_{account_type}"), default_max
+            )
+        max_final_by_type = {}
+        for account_type, defaults in _DEFAULT_ACCOUNT_TIER_MAX_FINAL.items():
+            default_max = defaults[size]
+            max_final_by_type[account_type] = _safe_float(
+                _env.get(f"{prefix}_MAX_BALANCE_FINAL_{account_type}"), default_max
+            )
+        ACCOUNT_BALANCE_TIERS[size] = {
+            'min': min_val, 'max': max_by_type,
+            'max_initial': max_initial_by_type, 'max_final': max_final_by_type,
+        }
 
     # Unset by default -- no session window means trading is allowed anytime.
     SESSION_START_TIME = _parse_time(_env.get("SESSION_START_TIME", ""))
@@ -480,6 +552,19 @@ def _reload_env():
     DAILY_PNL_CAP_BUFFER_RANGE = (
         _safe_float(_env.get("DAILY_PNL_CAP_BUFFER_MIN"), default_pnl_buffer_min),
         _safe_float(_env.get("DAILY_PNL_CAP_BUFFER_MAX"), default_pnl_buffer_max),
+    )
+
+    # Not yet consulted by anything until the Flip Mode state machine
+    # itself is wired in -- see _DEFAULT_FLIP_MODE_MIN_PROFITABLE_DAYS's
+    # own comment.
+    FLIP_MODE_MIN_PROFITABLE_DAYS = _safe_positive_int(
+        _env.get("FLIP_MODE_MIN_PROFITABLE_DAYS"), _DEFAULT_FLIP_MODE_MIN_PROFITABLE_DAYS
+    )
+    FLIP_MODE_MIN_DAILY_PROFIT = _safe_float(
+        _env.get("FLIP_MODE_MIN_DAILY_PROFIT"), _DEFAULT_FLIP_MODE_MIN_DAILY_PROFIT
+    )
+    FLIP_MODE_CONSISTENCY_DIVISOR = _safe_float(
+        _env.get("FLIP_MODE_CONSISTENCY_DIVISOR"), _DEFAULT_FLIP_MODE_CONSISTENCY_DIVISOR
     )
 
 
