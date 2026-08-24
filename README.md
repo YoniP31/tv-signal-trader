@@ -41,7 +41,7 @@ Before opening the browser, `ensure_configured()` checks `.env` for a TradingGen
 
 Separately, `config.validate_env()` checks every non-credential `.env` setting (session/no-trade windows, balance tiers, `MPPC`, the daily P&L limits and buffers) against its expected format — `setup_wizard.check_env_validity()` runs this before `web`/`web_multi`/`test` and, if anything's malformed (e.g. a typo'd time or a non-numeric dollar amount), prints the bad value alongside a valid example and lets you fix it right there in the terminal instead of hunting down the typo in a text editor or hitting a confusing crash mid-command. A malformed value never crashes the app outright either way — `_reload_env()` falls back to that setting's built-in default — but `check_env_validity()` is what actually surfaces *why* a setting isn't behaving as configured.
 
-A handful of settings live in `.env` but aren't part of this wizard — edit `.env` directly, or start from [docs/.env](docs/.env), a committed template listing every field with credentials blanked out:
+A handful of settings live in `.env` but aren't part of this wizard — edit `.env` directly, or start from [docs/.env](docs/.env), a committed template listing every field with credentials blanked out (see [docs/.env.annotated](docs/.env.annotated) for the same fields with the reasoning behind each one spelled out):
 
 - **Account balance limits** (`ACCOUNT_25K_MIN_BALANCE`/`ACCOUNT_50K_MIN_BALANCE`, `ACCOUNT_25K_MAX_BALANCE_EVAL`/`_LIVE`/`ACCOUNT_50K_MAX_BALANCE_EVAL`/`_LIVE`) — see step 5 below.
 - **Trading session window** (`SESSION_START_TIME`/`SESSION_END_TIME`, `HH:MM` 24-hour, Israel time) — see step 6 below. Leave unset to allow trading at any time.
