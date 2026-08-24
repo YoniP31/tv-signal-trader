@@ -1107,6 +1107,16 @@ def run_web_loop_multi(driver, max_positions_per_company=None, command_name="web
     program start" as well as "once a day", without needing its own
     separate startup pass.
 
+    Right alongside that same daily sweep, signal_source.
+    act_on_second_withdrawals detects and completes the Second Withdrawal
+    re-entry cycle (see the Flip Mode plan's Phase 3) for every LIVE
+    account with an unexplained balance drop: re-adds it to
+    TradingGenerator, marks #secondWithdrawalBtn, and seeds a fresh
+    running_equity_target/cycle_start_date/cycle_starting_balance -- all
+    before _record_daily_equity below writes today's own equity entry,
+    since the detection it's built on needs status.get_equity_history to
+    still reflect the *previous* day.
+
     `hide_tg_window` overrides config.HIDE_TRADINGGENERATOR_WINDOW for this
     run only (None = use the config default) -- see tg.open_tab. Only has
     an effect if TradingGenerator's window/tab isn't already open from
@@ -1162,6 +1172,15 @@ def run_web_loop_multi(driver, max_positions_per_company=None, command_name="web
             if last_sweep_date != today:
                 connected_company = signal_source.sweep_liquidated_accounts(
                     driver, web_tab, tv_tab, connected_company, external_open_accounts
+                )
+                # Must run before _record_daily_equity below writes today's
+                # entry -- detect_second_withdrawals compares against the
+                # *previous* day's recorded equity (see its own docstring),
+                # which is only still true earlier in the day, right here
+                # alongside the sweep above.
+                driver.switch_to.window(tv_tab)
+                _acted, connected_company = signal_source.act_on_second_withdrawals(
+                    driver, web_tab, tv_tab, connected_company
                 )
                 status.update(last_sweep_at=status.timestamp())
                 last_sweep_date = today

@@ -204,6 +204,15 @@ def _run_test_menu(driver, tv_tab, hide_tg_window=None, relaunch_browser=None):
         if not detected:
             print("\n  No undetected withdrawals found among tracked LIVE accounts.")
 
+    def _test_second_withdrawal_act():
+        web_tab = _tg_tab()
+        driver.switch_to.window(tv_tab)
+        acted, _connected_company = signal_source.act_on_second_withdrawals(driver, web_tab, tv_tab, None)
+        if not acted:
+            print("\n  No undetected withdrawals found among tracked LIVE accounts - nothing to act on.")
+        else:
+            print(f"\n  Completed the re-entry cycle for: {', '.join(f'{c} / {a}' for c, a in acted)}")
+
     test_commands = {
         "buy": (
             "Places a manual buy with 150-tick TP/SL on whatever symbol is currently loaded "
@@ -312,6 +321,15 @@ def _run_test_menu(driver, tv_tab, hide_tg_window=None, relaunch_browser=None):
             "least one prior day's equity for a LIVE account (see the daily equity recording at "
             "session end) -- nothing to select first.",
             _test_second_withdrawal_dry_run,
+        ),
+        "second_withdrawal_act": (
+            "MUTATING -- re-adds every LIVE account second_withdrawal_dry_run would flag as a "
+            "portfolio (account_type 'live'), clicks 'Mark as Second Withdrawal' (requires "
+            "TRADINGGENERATOR_ADMIN_CODE in .env), and resets its running equity target/cycle "
+            "start date/cycle starting balance in status.json. Same detection as "
+            "second_withdrawal_dry_run -- run that first to see what this would act on before "
+            "running this for real.",
+            _test_second_withdrawal_act,
         ),
     }
     if relaunch_browser is not None:

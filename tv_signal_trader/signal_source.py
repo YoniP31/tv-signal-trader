@@ -1,6 +1,7 @@
 import random
 
 from . import config
+from . import flip_mode
 from . import history
 from . import status
 from . import trading
@@ -250,6 +251,85 @@ def detect_second_withdrawals(driver, tv_tab, connected_company):
 
     print(f"[WITHDRAWAL] Done ({len(detected)} possible withdrawal(s) detected).")
     return detected, connected_company
+
+
+def act_on_second_withdrawals(driver, web_tab, tv_tab, connected_company):
+    """Once a day, alongside sweep_liquidated_accounts: runs
+    detect_second_withdrawals, then completes the real re-entry cycle (see
+    the Flip Mode plan's Phase 3) for every account it flags -- re-adds it
+    to TradingGenerator (tg.add_portfolio, always 'live' -- Second
+    Withdrawal is LIVE-only by construction, since detect_second_withdrawals
+    only ever looks at LIVE-typed accounts), marks #secondWithdrawalBtn
+    (tg.mark_second_withdrawal -- already idempotent, a no-op if an earlier
+    withdrawal on this same account marked it already), and seeds a fresh
+    running_equity_target/cycle_start_date/cycle_starting_balance so
+    consistency/day-count start measuring from today's post-withdrawal
+    equity onward -- never from before it, which would let the withdrawal
+    itself get mistaken for a trading loss (see flip_mode.
+    seed_reentry_target and history.py's since_date handling).
+
+    If the account already has a current TradingGenerator portfolio (e.g.
+    a previous pass got partway through this same cycle before a crash/
+    stop), re-adding is skipped and the rest of the cycle still runs --
+    completing it rather than getting stuck retrying a re-add that would
+    fail anyway.
+
+    Each step that can fail leaves the account to simply be picked up
+    again on the next day's sweep (detect_second_withdrawals will flag it
+    again -- the underlying balance mismatch is still there until this
+    actually finishes) rather than partially resetting its state.
+
+    Returns (acted, connected_company) -- `acted` is the list of
+    (company, account) pairs that completed the full cycle this pass.
+    """
+    detected, connected_company = detect_second_withdrawals(driver, tv_tab, connected_company)
+    acted = []
+    today = config.now_in_israel().date().isoformat()
+
+    for entry in detected:
+        company = entry['company']
+        account = entry['account']
+        current_balance = entry['current_balance']
+
+        driver.switch_to.window(web_tab)
+        if not tg.select_company(driver, company):
+            print(f"  [WARN] Could not select '{company}' in TradingGenerator to re-add "
+                  f"'{account}' - will retry next sweep.")
+            continue
+
+        if account in tg.list_portfolios(driver):
+            print(f"  '{company} / {account}' already has a TradingGenerator portfolio - not "
+                  "re-adding (picking up where an earlier, interrupted pass may have left off).")
+        elif not tg.add_portfolio(driver, account, account_type='live'):
+            print(f"  [WARN] Could not re-add '{company} / {account}' to TradingGenerator - "
+                  "will retry next sweep.")
+            continue
+
+        if not tg.select_portfolio(driver, account):
+            print(f"  [WARN] Could not select '{company} / {account}' after re-adding it - "
+                  "will retry next sweep.")
+            continue
+
+        if not tg.mark_second_withdrawal(driver, config.read_admin_code()):
+            print(f"  [WARN] Could not mark '{company} / {account}' for second withdrawal - "
+                  "will retry next sweep.")
+            continue
+
+        tiers = config.ACCOUNT_BALANCE_TIERS
+        tier_size = min(tiers, key=lambda size: abs(current_balance - size))
+        tier_final_by_type = tiers[tier_size]['max_final']
+        tier_final = tier_final_by_type.get('LIVE', max(tier_final_by_type.values()))
+        new_target = flip_mode.seed_reentry_target(current_balance, tier_final, config.FLIP_MODE_REENTRY_BUFFER)
+
+        status.set_running_equity_target(company, account, new_target)
+        status.set_cycle_start_date(company, account, today)
+        status.set_cycle_starting_balance(company, account, current_balance)
+
+        print(f"  [WITHDRAWAL] '{company} / {account}' re-added and reset - new running equity "
+              f"target {new_target:.2f}, cycle starts today ({today}) at {current_balance:.2f}.")
+        acted.append((company, account))
+
+    return acted, connected_company
 
 
 def generate_next_trade(driver, next_company, next_portfolio, unavailable, open_positions=()):
