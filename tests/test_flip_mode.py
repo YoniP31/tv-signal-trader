@@ -269,5 +269,35 @@ class DetailsTests(unittest.TestCase):
         self.assertIsNone(details['consistency_holds'])
 
 
+class SeedReentryTargetTests(unittest.TestCase):
+    """Covers flip_mode.seed_reentry_target() -- the re-entry target seed
+    for an account just re-added to TradingGenerator after a detected
+    withdrawal (see the Flip Mode plan's Phase 3)."""
+
+    def test_below_tier_final_seeds_at_tier_final(self):
+        # The normal case: the withdrawal took the account well under its
+        # tier's final threshold -- seed there directly, not the buffer
+        # formula (which is only for the account having kept growing past
+        # tier_final in the gap before the withdrawal was detected).
+        self.assertEqual(flip_mode.seed_reentry_target(51000, tier_final=53500, buffer=1500), 53500)
+
+    def test_at_tier_final_seeds_with_the_buffer(self):
+        # "at or above" -- a post-withdrawal equity exactly equal to
+        # tier_final would otherwise seed a target already cleared,
+        # immediately re-qualifying for removal with no real evaluation
+        # in between.
+        self.assertEqual(flip_mode.seed_reentry_target(53500, tier_final=53500, buffer=1500), 55000)
+
+    def test_above_tier_final_seeds_post_withdrawal_equity_plus_the_buffer(self):
+        # The account kept growing between qualifying for removal and the
+        # withdrawal actually being detected -- the seed must still be a
+        # real target ahead of where it already is, not the (already
+        # cleared) tier final.
+        self.assertEqual(flip_mode.seed_reentry_target(54200, tier_final=53500, buffer=1500), 55700)
+
+    def test_uses_whatever_buffer_is_passed_in(self):
+        self.assertEqual(flip_mode.seed_reentry_target(53500, tier_final=53500, buffer=1000), 54500)
+
+
 if __name__ == "__main__":
     unittest.main()

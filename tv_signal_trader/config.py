@@ -131,6 +131,13 @@ _DEFAULT_FLIP_MODE_MIN_PROFITABLE_DAYS = 5
 _DEFAULT_FLIP_MODE_MIN_DAILY_PROFIT = 200
 _DEFAULT_FLIP_MODE_CONSISTENCY_DIVISOR = 0.5
 
+# Second Withdrawal's re-entry target seed (see flip_mode.seed_reentry_
+# target): how far above the account's post-withdrawal equity to seed its
+# new running_equity_target, on the rare occasion that equity is already
+# at/above the tier's final threshold. Overridable via
+# FLIP_MODE_REENTRY_BUFFER in .env.
+_DEFAULT_FLIP_MODE_REENTRY_BUFFER = 1500
+
 # When a trade's take-profit would push the account's balance past its max
 # (see trading.adjust_tp_for_max_balance), the TP is capped so the result
 # lands at max + a random buffer in this $ range instead -- looks more
@@ -319,6 +326,10 @@ _ENV_FIELD_SPECS = _balance_tier_field_specs() + [
         "FLIP_MODE_CONSISTENCY_DIVISOR", _check_consistency_divisor,
         f'a number greater than 0 and at most 1, e.g. "{_DEFAULT_FLIP_MODE_CONSISTENCY_DIVISOR:g}"',
     ),
+    (
+        "FLIP_MODE_REENTRY_BUFFER", _check_float,
+        f'a dollar amount, e.g. "{_DEFAULT_FLIP_MODE_REENTRY_BUFFER:g}"',
+    ),
 ]
 
 # (start_key, end_key, label) -- a window needs both ends set to mean
@@ -501,6 +512,7 @@ def _reload_env():
     global DAILY_PROFIT_LIMIT, DAILY_LOSS_LIMIT
     global DAILY_PNL_CAP_BUFFER_RANGE
     global FLIP_MODE_MIN_PROFITABLE_DAYS, FLIP_MODE_MIN_DAILY_PROFIT, FLIP_MODE_CONSISTENCY_DIVISOR
+    global FLIP_MODE_REENTRY_BUFFER
     _env = _load_env_file(ENV_FILE)
     TRADINGGENERATOR_USERNAME = _env.get("TRADINGGENERATOR_USERNAME", "")
     TRADINGGENERATOR_PASSWORD = _env.get("TRADINGGENERATOR_PASSWORD", "")
@@ -595,6 +607,9 @@ def _reload_env():
     )
     FLIP_MODE_CONSISTENCY_DIVISOR = _safe_float(
         _env.get("FLIP_MODE_CONSISTENCY_DIVISOR"), _DEFAULT_FLIP_MODE_CONSISTENCY_DIVISOR
+    )
+    FLIP_MODE_REENTRY_BUFFER = _safe_float(
+        _env.get("FLIP_MODE_REENTRY_BUFFER"), _DEFAULT_FLIP_MODE_REENTRY_BUFFER
     )
 
 

@@ -60,6 +60,32 @@ def _recompute_target(consistency_holds, best_day_profit, starting_balance, tier
     return max(tier_final, escalated)
 
 
+def seed_reentry_target(post_withdrawal_equity, tier_final, buffer):
+    """The running_equity_target to seed an account with right after it's
+    re-added to TradingGenerator following a detected withdrawal (see the
+    Flip Mode plan's Phase 3) -- just a starting point, still subject to
+    evaluate()'s own escalation formula replacing it later, exactly like
+    any other running_equity_target.
+
+    Normally the tier's FINAL threshold, not the initial one -- this
+    account has already proven itself once (it qualified for removal to
+    get here), so there's no reason to stage it through the initial
+    checkpoint again. But if the post-withdrawal equity is already at or
+    above that final threshold (the account kept growing between
+    qualifying for removal and the withdrawal actually being detected --
+    e.g. more trades closed favorably in the gap), seeding at tier_final
+    would be a target the account has already cleared, which would
+    immediately qualify it for removal again on the very next check with
+    no real evaluation in between. Seeding at `post_withdrawal_equity +
+    buffer` instead (buffer confirmed with the user as $1,500, see
+    config.FLIP_MODE_REENTRY_BUFFER) guarantees a real target still ahead
+    of it.
+    """
+    if post_withdrawal_equity >= tier_final:
+        return post_withdrawal_equity + buffer
+    return tier_final
+
+
 def evaluate(
     *,
     current_balance,

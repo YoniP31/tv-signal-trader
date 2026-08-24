@@ -156,6 +156,15 @@ class ValidateEnvTests(_TempEnvFileTestCase):
         self._write_env("FLIP_MODE_CONSISTENCY_DIVISOR=1\n")
         self.assertEqual(config.validate_env(), [])
 
+    def test_non_numeric_flip_mode_reentry_buffer_is_flagged(self):
+        self._write_env("FLIP_MODE_REENTRY_BUFFER=lots\n")
+        problems = config.validate_env()
+        self.assertEqual([p[0] for p in problems], ["FLIP_MODE_REENTRY_BUFFER"])
+
+    def test_well_formed_flip_mode_reentry_buffer_is_not_flagged(self):
+        self._write_env("FLIP_MODE_REENTRY_BUFFER=1500\n")
+        self.assertEqual(config.validate_env(), [])
+
 
 class SafeParsingFallbackTests(_TempEnvFileTestCase):
     """_reload_env() must never crash on a malformed value -- it falls back
@@ -194,6 +203,10 @@ class SafeParsingFallbackTests(_TempEnvFileTestCase):
         self.assertEqual(
             config.FLIP_MODE_CONSISTENCY_DIVISOR, config._DEFAULT_FLIP_MODE_CONSISTENCY_DIVISOR
         )
+
+    def test_malformed_flip_mode_reentry_buffer_falls_back_to_the_default(self):
+        self._write_env("FLIP_MODE_REENTRY_BUFFER=lots\n")
+        self.assertEqual(config.FLIP_MODE_REENTRY_BUFFER, config._DEFAULT_FLIP_MODE_REENTRY_BUFFER)
 
     def test_malformed_flip_mode_initial_final_tiers_fall_back_to_their_defaults(self):
         self._write_env(
