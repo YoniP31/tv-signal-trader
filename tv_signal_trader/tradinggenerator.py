@@ -157,11 +157,27 @@ def open_tab(driver, other_tab, hide_window=None):
 
 def _tab_name(tab_el):
     """The plain-text name span inside a company/portfolio tab, excluding its
-    icon/badge/delete-x children."""
+    icon/badge/delete-x children.
+
+    Once a portfolio is marked for Second Withdrawal (see
+    mark_second_withdrawal), TradingGenerator prepends an extra ordinal
+    badge span to its tab (confirmed live: a plain, class-less
+    `<span style="...">2nd</span>` sitting *before* the name span --
+    `.tab-x`/`.tab-type`/`.tab-delete` don't match it, since it carries
+    none of those classes, only inline styling). A plain find_element
+    (first match) would return that badge instead of the real name --
+    caught live: it made list_portfolios() return "2nd" instead of the
+    actual account name, which then got treated as a real portfolio/
+    Tradovate-account name downstream. Any such prepended badge always
+    sits before the real name in the DOM, so picking the *last* remaining
+    match instead is correct whether or not the badge is present -- with
+    no badge there's only one match anyway.
+    """
     try:
-        return tab_el.find_element(
+        spans = tab_el.find_elements(
             By.CSS_SELECTOR, "span:not(.tab-x):not(.tab-type):not(.tab-delete)"
-        ).text.strip()
+        )
+        return spans[-1].text.strip() if spans else None
     except Exception:
         return None
 
