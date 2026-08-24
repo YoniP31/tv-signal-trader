@@ -1,6 +1,7 @@
 import random
 
 from . import config
+from . import history
 from . import status
 from . import trading
 from . import tradinggenerator as tg
@@ -139,6 +140,116 @@ def sweep_liquidated_accounts(driver, web_tab, tv_tab, connected_company, extern
 
     print("[SWEEP] Done.")
     return connected_company
+
+
+def _print_withdrawal_check(company, account, is_withdrawal, details):
+    """Narrates a real history.detect_withdrawal() call: the last recorded
+    day it compared against, today's real balance and Total P/L, and the
+    unexplained amount that decision actually turned on -- printed for
+    *every* account checked, not just ones flagged, so a console watching
+    this pass shows the full arithmetic behind a "no withdrawal" verdict
+    too, not just a silent skip. Same narrate-the-pure-decision split as
+    multi_signal_source._print_flip_mode_decision, and for the same
+    reason: history.detect_withdrawal itself stays silent and
+    hand-derived-testable.
+    """
+    date = details['last_recorded_date']
+    last_equity = details['last_recorded_equity']
+    balance = details['current_balance']
+    pl = details['today_total_pl']
+    pl_text = f"{pl:+.2f}" if pl is not None else "unreadable"
+    print(f"  '{company} / {account}': last recorded {date} = {last_equity:.2f}, "
+          f"current balance = {balance:.2f}, today's Total P/L = {pl_text}")
+    if details['unexplained'] is None:
+        print("    Total P/L couldn't be read - refusing to guess, treating as no withdrawal.")
+        return
+    print(f"    actual change = {details['actual_change']:+.2f}, "
+          f"unexplained (actual change - Total P/L) = {details['unexplained']:+.2f} "
+          f"(tolerance {details['tolerance']:.2f}) "
+          f"-> {'WITHDRAWAL DETECTED' if is_withdrawal else 'no withdrawal'}")
+
+
+def detect_second_withdrawals(driver, tv_tab, connected_company):
+    """Read-only pass over every LIVE-typed account ever tracked
+    (status.list_tracked_accounts, present or absent from
+    TradingGenerator -- see the Flip Mode plan's Phase 3), comparing each
+    one's real, current Tradovate balance and today's own Total P/L
+    against its last recorded day (history.detect_withdrawal) to flag a
+    balance drop trading alone can't explain -- a withdrawal a human made
+    outside the bot's control.
+
+    Meant to run once a day, alongside sweep_liquidated_accounts and
+    *before* this session's own _record_daily_equity -- both need
+    status.get_equity_history to still reflect the *previous* day's
+    equity, not today's (which _record_daily_equity only writes at session
+    end). Not yet wired into the main trading loop or into any action --
+    this only detects and reports (no tg.add_portfolio, no
+    #secondWithdrawalBtn click, no status.json writes at all); see
+    test_commands' second_withdrawal_dry_run in cli.py for a way to run
+    this on demand.
+
+    Returns (detected, connected_company) -- `detected` is a list of dicts
+    (company, account, current_balance, last_recorded_equity,
+    today_total_pl), one per account flagged this pass; connected_company
+    follows the same convention as every other per-company sweep here.
+    """
+    print("\n[WITHDRAWAL] Checking LIVE accounts for undetected withdrawals...")
+    detected = []
+    accounts_by_company = {}
+    for company, account in status.list_tracked_accounts(account_type='LIVE'):
+        accounts_by_company.setdefault(company, []).append(account)
+
+    for company, accounts in accounts_by_company.items():
+        tradovate_account = config.TRADOVATE_ACCOUNTS.get(company)
+        if tradovate_account is None:
+            continue  # nothing configured to connect with for this company
+
+        driver.switch_to.window(tv_tab)
+        if company != connected_company or not trading.is_tradovate_connected(driver):
+            if trading.is_tradovate_connected(driver):
+                trading.disconnect_tradovate(driver, company=connected_company)
+            if not trading.connect_tradovate(
+                driver, tradovate_account['username'], tradovate_account['password'], company=company
+            ):
+                print(f"  [WARN] Could not connect to Tradovate for '{company}' - skipping its "
+                      "withdrawal check.")
+                connected_company = None
+                continue
+            connected_company = company
+
+        for account in accounts:
+            days = status.get_equity_history(company, account)
+            if not days:
+                print(f"  '{company} / {account}': no recorded equity history yet - "
+                      "nothing to compare against, skipping.")
+                continue
+
+            if not trading.select_tradovate_account_with_reconnect(driver, company, account):
+                print(f"  [WARN] Could not select '{company}' Tradovate account '{account}' to "
+                      "check it for a withdrawal - skipping.")
+                continue
+            balance = trading.read_account_balance(driver)
+            if balance is None:
+                print(f"  [WARN] Could not read '{company} / {account}' balance to check it for "
+                      "a withdrawal - skipping.")
+                continue
+            today_total_pl = None
+            if trading.click_account_summary_tab(driver):
+                today_total_pl = trading.read_total_pl(driver)
+
+            is_withdrawal, details = history.detect_withdrawal(days, balance, today_total_pl)
+            _print_withdrawal_check(company, account, is_withdrawal, details)
+            if is_withdrawal:
+                detected.append({
+                    'company': company,
+                    'account': account,
+                    'current_balance': balance,
+                    'last_recorded_equity': details['last_recorded_equity'],
+                    'today_total_pl': today_total_pl,
+                })
+
+    print(f"[WITHDRAWAL] Done ({len(detected)} possible withdrawal(s) detected).")
+    return detected, connected_company
 
 
 def generate_next_trade(driver, next_company, next_portfolio, unavailable, open_positions=()):

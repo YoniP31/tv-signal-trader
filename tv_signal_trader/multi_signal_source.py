@@ -442,6 +442,13 @@ def _gather_flip_mode_inputs(driver, web_tab, tv_tab, company, portfolio, connec
     if account_type is None:
         print(f"  [FAIL] Could not read '{company} / {portfolio}''s account type (EVAL/LIVE).")
         return None, connected_company
+    # Persisted on every read, not just at removal -- a portfolio can be
+    # removed by a human directly, without the bot's own removal logic
+    # ever running, so Second Withdrawal tracking (LIVE only) needs
+    # whatever type was last actually observed to still be on file by
+    # the time that happens (see status.set_account_type's own
+    # docstring).
+    status.set_account_type(company, portfolio, account_type)
 
     in_flip_mode = tg.is_flip_mode_active(driver)
     if in_flip_mode is None:

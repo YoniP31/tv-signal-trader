@@ -28,6 +28,7 @@ class GatherFlipModeInputsTests(unittest.TestCase):
             read_account_balance=MagicMock(return_value=53200.0),
             _select_and_verify=MagicMock(return_value=True),
             read_active_account_type=MagicMock(return_value="LIVE"),
+            set_account_type=MagicMock(),
             is_flip_mode_active=MagicMock(return_value=False),
             get_running_equity_target=MagicMock(return_value=None),
             get_equity_history=MagicMock(return_value=[]),
@@ -45,6 +46,7 @@ class GatherFlipModeInputsTests(unittest.TestCase):
              patch.object(ms.trading, "read_account_balance", p["read_account_balance"]), \
              patch.object(ms, "_select_and_verify", p["_select_and_verify"]), \
              patch.object(ms.tg, "read_active_account_type", p["read_active_account_type"]), \
+             patch.object(ms.status, "set_account_type", p["set_account_type"]), \
              patch.object(ms.tg, "is_flip_mode_active", p["is_flip_mode_active"]), \
              patch.object(ms.status, "get_running_equity_target", p["get_running_equity_target"]), \
              patch.object(ms.status, "get_equity_history", p["get_equity_history"]), \
@@ -68,6 +70,28 @@ class GatherFlipModeInputsTests(unittest.TestCase):
         inputs, _ = self._run()
         self.assertEqual(inputs['tier_initial'], config.ACCOUNT_BALANCE_TIERS[50000]['max_initial']['LIVE'])
         self.assertEqual(inputs['tier_final'], config.ACCOUNT_BALANCE_TIERS[50000]['max_final']['LIVE'])
+
+    def test_persists_the_account_type_on_every_read_not_just_at_removal(self):
+        # So Second Withdrawal tracking (LIVE only) still knows an
+        # account's type after it's gone, even if a human removed it
+        # directly and the bot's own removal logic never ran.
+        p = self._patches(read_active_account_type=MagicMock(return_value="LIVE"))
+        with patch.object(ms, "_ensure_tradovate_connection", p["_ensure_tradovate_connection"]), \
+             patch.object(ms.trading, "select_tradovate_account_with_reconnect",
+                           p["select_tradovate_account_with_reconnect"]), \
+             patch.object(ms.trading, "read_account_balance", p["read_account_balance"]), \
+             patch.object(ms, "_select_and_verify", p["_select_and_verify"]), \
+             patch.object(ms.tg, "read_active_account_type", p["read_active_account_type"]), \
+             patch.object(ms.status, "set_account_type", p["set_account_type"]) as set_type_mock, \
+             patch.object(ms.tg, "is_flip_mode_active", p["is_flip_mode_active"]), \
+             patch.object(ms.status, "get_running_equity_target", p["get_running_equity_target"]), \
+             patch.object(ms.status, "get_equity_history", p["get_equity_history"]), \
+             patch.object(ms.status, "get_cycle_start_date", p["get_cycle_start_date"]), \
+             patch.object(ms.status, "get_cycle_starting_balance", p["get_cycle_starting_balance"]):
+            ms._gather_flip_mode_inputs(
+                self.driver, self.web_tab, self.tv_tab, "Apex Trader Funding", "PAAPEX0001", None
+            )
+        set_type_mock.assert_called_once_with("Apex Trader Funding", "PAAPEX0001", "LIVE")
 
     def test_tier_min_is_the_tiers_own_min(self):
         # The blown-account check is unaffected by Flip Mode.

@@ -9,6 +9,7 @@ from . import logging_utils
 from . import monitor
 from . import multi_signal_source
 from . import setup_wizard
+from . import signal_source
 from . import state
 from . import status
 from . import trading
@@ -197,6 +198,12 @@ def _run_test_menu(driver, tv_tab, hide_tg_window=None, relaunch_browser=None):
         print(f"  Decision: {decision}")
         print(f"  New running equity target (not saved): {new_target:.2f}")
 
+    def _test_second_withdrawal_dry_run():
+        driver.switch_to.window(tv_tab)
+        detected, _connected_company = signal_source.detect_second_withdrawals(driver, tv_tab, None)
+        if not detected:
+            print("\n  No undetected withdrawals found among tracked LIVE accounts.")
+
     test_commands = {
         "buy": (
             "Places a manual buy with 150-tick TP/SL on whatever symbol is currently loaded "
@@ -296,6 +303,15 @@ def _run_test_menu(driver, tv_tab, hide_tg_window=None, relaunch_browser=None):
             "defaults to whatever's currently selected in TradingGenerator, or asks for a "
             "company/portfolio.",
             _test_flip_mode_dry_run,
+        ),
+        "second_withdrawal_dry_run": (
+            "Read-only -- no button clicks, no add_portfolio, no status.json writes. Connects to "
+            "every configured company's Tradovate login in turn and checks every LIVE-typed "
+            "account ever tracked (present or absent from TradingGenerator) for a balance drop "
+            "today's own trading P/L can't explain. No setup needed beyond having recorded at "
+            "least one prior day's equity for a LIVE account (see the daily equity recording at "
+            "session end) -- nothing to select first.",
+            _test_second_withdrawal_dry_run,
         ),
     }
     if relaunch_browser is not None:

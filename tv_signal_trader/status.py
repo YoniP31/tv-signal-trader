@@ -251,5 +251,58 @@ def get_cycle_starting_balance(company, account):
     return data.get("account_history", {}).get(_account_key(company, account), {}).get("cycle_starting_balance")
 
 
+def set_account_type(company, account, account_type):
+    """Persists `account`'s type ('EVAL'/'LIVE') every time it's actually
+    read from TradingGenerator's page (see
+    multi_signal_source._gather_flip_mode_inputs) -- not just once at
+    removal time. Second Withdrawal tracking (LIVE only, see the Flip
+    Mode plan's Phase 3) needs to know an account's type for as long as
+    it's tracked, including after it no longer has a TradingGenerator
+    portfolio at all to read the type *from* -- which can happen without
+    the bot ever removing it itself (a human can always remove a
+    portfolio directly), so this can't only be captured at the one
+    moment the bot's own removal logic runs. Persisting it on every
+    normal read instead means whatever was last observed while the
+    portfolio still existed is always on file by the time it matters.
+    `account_type` may be None to clear it."""
+    return _update_account_history(company, account, account_type=account_type)
+
+
+def get_account_type(company, account):
+    """This account's last-observed type ('EVAL'/'LIVE'), or None if
+    never recorded."""
+    data = _read()
+    return data.get("account_history", {}).get(_account_key(company, account), {}).get("account_type")
+
+
+def list_tracked_accounts(account_type=None):
+    """[(company, account), ...] for every account with a recorded entry
+    under "account_history" -- present or absent from TradingGenerator's
+    current portfolio list, since that section deliberately outlives
+    portfolio removal (see record_daily_equity/set_account_type). Second
+    Withdrawal detection (see the Flip Mode plan's Phase 3) needs exactly
+    this: every LIVE account ever tracked, whether or not it currently has
+    a TG portfolio to read.
+
+    If `account_type` is given ('EVAL'/'LIVE'), only accounts whose
+    last-observed type (set_account_type) matches are included -- an
+    account with no recorded type at all is excluded whenever a filter is
+    given, never guessed as a match.
+
+    Parses (company, account) back out of each entry's "Company / Account"
+    key (see _account_key) rather than needing a schema change -- safe
+    since none of this project's configured company/account names contain
+    " / " themselves (the same assumption _account_key's construction
+    already relies on)."""
+    data = _read()
+    result = []
+    for key, entry in data.get("account_history", {}).items():
+        if account_type is not None and entry.get("account_type") != account_type:
+            continue
+        company, _sep, account = key.partition(" / ")
+        result.append((company, account))
+    return result
+
+
 def timestamp():
     return _now()

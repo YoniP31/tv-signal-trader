@@ -143,5 +143,116 @@ class ProfitableDayCountTests(unittest.TestCase):
         self.assertEqual(history.profitable_day_count(days, 50000, 250, since_date="2026-08-02"), 0)
 
 
+class DetectWithdrawalTests(unittest.TestCase):
+    def _is_withdrawal(self, *args, **kwargs):
+        is_withdrawal, _details = history.detect_withdrawal(*args, **kwargs)
+        return is_withdrawal
+
+    def test_no_history_yet_is_never_a_withdrawal(self):
+        self.assertFalse(self._is_withdrawal([], 50000, today_total_pl=0))
+
+    def test_unreadable_total_pl_is_never_a_withdrawal(self):
+        # None means "couldn't be checked", not "zero" -- never guess.
+        days = [{"date": "2026-08-01", "equity": 53000}]
+        self.assertFalse(self._is_withdrawal(days, 40000, today_total_pl=None))
+
+    def test_unchanged_balance_with_no_trading_is_not_a_withdrawal(self):
+        days = [{"date": "2026-08-01", "equity": 53000}]
+        self.assertFalse(self._is_withdrawal(days, 53000, today_total_pl=0))
+
+    def test_a_drop_fully_explained_by_todays_trading_loss_is_not_a_withdrawal(self):
+        # Balance dropped by exactly what trading lost today -- an
+        # ordinary losing day, not a withdrawal.
+        days = [{"date": "2026-08-01", "equity": 53000}]
+        self.assertFalse(self._is_withdrawal(days, 52500, today_total_pl=-500))
+
+    def test_a_drop_with_no_trading_today_is_a_withdrawal(self):
+        days = [{"date": "2026-08-01", "equity": 53000}]
+        self.assertTrue(self._is_withdrawal(days, 52500, today_total_pl=0))
+
+    def test_a_drop_bigger_than_todays_trading_loss_is_a_withdrawal(self):
+        # $200 trading loss, but the balance actually dropped $700 --
+        # $500 of that is unexplained by trading (a same-day withdrawal
+        # alongside an ordinary losing day).
+        days = [{"date": "2026-08-01", "equity": 53000}]
+        self.assertTrue(self._is_withdrawal(days, 52300, today_total_pl=-200))
+
+    def test_a_profitable_day_that_still_ends_with_a_lower_balance_is_a_withdrawal(self):
+        # +$300 today, but the balance is still $200 *lower* overall --
+        # $500 must have been pulled out, exceeding the day's profit.
+        days = [{"date": "2026-08-01", "equity": 53000}]
+        self.assertTrue(self._is_withdrawal(days, 52800, today_total_pl=300))
+
+    def test_a_drop_smaller_than_todays_trading_loss_is_not_a_withdrawal(self):
+        # Trading lost $500, but the balance only dropped $200 -- nothing
+        # unexplained (if anything, this looks like money came *in*,
+        # which isn't what this detects).
+        days = [{"date": "2026-08-01", "equity": 53000}]
+        self.assertFalse(self._is_withdrawal(days, 52800, today_total_pl=-500))
+
+    def test_a_tiny_mismatch_within_tolerance_is_not_a_withdrawal(self):
+        days = [{"date": "2026-08-01", "equity": 53000}]
+        self.assertFalse(self._is_withdrawal(days, 52999.5, today_total_pl=0, tolerance=1.0))
+
+    def test_exactly_at_the_tolerance_boundary_is_not_a_withdrawal(self):
+        days = [{"date": "2026-08-01", "equity": 53000}]
+        self.assertFalse(self._is_withdrawal(days, 52999.0, today_total_pl=0, tolerance=1.0))
+
+    def test_just_past_the_tolerance_boundary_is_a_withdrawal(self):
+        days = [{"date": "2026-08-01", "equity": 53000}]
+        self.assertTrue(self._is_withdrawal(days, 52998.9, today_total_pl=0, tolerance=1.0))
+
+    def test_compares_against_the_last_recorded_day_not_an_earlier_one(self):
+        days = [
+            {"date": "2026-08-01", "equity": 60000},
+            {"date": "2026-08-02", "equity": 53000},
+        ]
+        # Dropping to 52500 from the *last* recorded day (53000) is a
+        # $500 unexplained drop -- not compared against the much higher
+        # first day (60000), which would swamp everything else.
+        self.assertTrue(self._is_withdrawal(days, 52500, today_total_pl=0))
+
+
+class DetectWithdrawalDetailsTests(unittest.TestCase):
+    """Covers the details dict detect_withdrawal() returns alongside the
+    bool -- meant for narrating *why* a verdict was reached (see
+    signal_source._print_withdrawal_check), mirroring flip_mode.evaluate()'s
+    own (decision, ..., details) shape."""
+
+    def test_no_history_populates_only_the_current_readings(self):
+        _is_withdrawal, details = history.detect_withdrawal([], 50000, today_total_pl=0)
+        self.assertIsNone(details['last_recorded_date'])
+        self.assertIsNone(details['last_recorded_equity'])
+        self.assertEqual(details['current_balance'], 50000)
+        self.assertEqual(details['today_total_pl'], 0)
+        self.assertIsNone(details['actual_change'])
+        self.assertIsNone(details['unexplained'])
+
+    def test_unreadable_total_pl_leaves_actual_change_and_unexplained_unset(self):
+        days = [{"date": "2026-08-01", "equity": 53000}]
+        _is_withdrawal, details = history.detect_withdrawal(days, 52500, today_total_pl=None)
+        self.assertEqual(details['last_recorded_date'], "2026-08-01")
+        self.assertEqual(details['last_recorded_equity'], 53000)
+        self.assertIsNone(details['today_total_pl'])
+        # Actual change *could* have been computed (both balances are
+        # known), but is deliberately left None -- there's no unexplained
+        # figure to report without a real Total P/L to subtract, so
+        # nothing here should look more complete than it is.
+        self.assertIsNone(details['actual_change'])
+        self.assertIsNone(details['unexplained'])
+
+    def test_a_normal_check_populates_every_field(self):
+        days = [{"date": "2026-08-01", "equity": 53000}]
+        is_withdrawal, details = history.detect_withdrawal(days, 52300, today_total_pl=-200, tolerance=1.0)
+        self.assertEqual(details['last_recorded_date'], "2026-08-01")
+        self.assertEqual(details['last_recorded_equity'], 53000)
+        self.assertEqual(details['current_balance'], 52300)
+        self.assertEqual(details['today_total_pl'], -200)
+        self.assertEqual(details['tolerance'], 1.0)
+        self.assertEqual(details['actual_change'], -700)
+        self.assertEqual(details['unexplained'], -500)
+        self.assertTrue(is_withdrawal)
+
+
 if __name__ == "__main__":
     unittest.main()

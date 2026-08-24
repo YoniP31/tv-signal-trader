@@ -92,5 +92,73 @@ class CycleStartingBalanceTests(_TempStatusFileTestCase):
         self.assertIsNone(status.get_cycle_starting_balance("Apex Trader Funding", "PAAPEX0001"))
 
 
+class AccountTypeTests(_TempStatusFileTestCase):
+    def test_defaults_to_none_for_an_unknown_account(self):
+        self.assertIsNone(status.get_account_type("Apex Trader Funding", "PAAPEX0001"))
+
+    def test_set_then_get_round_trips(self):
+        status.set_account_type("Apex Trader Funding", "PAAPEX0001", "LIVE")
+        self.assertEqual(status.get_account_type("Apex Trader Funding", "PAAPEX0001"), "LIVE")
+
+    def test_survives_independently_of_whether_the_portfolio_still_exists(self):
+        # The whole point: recorded while the portfolio was still active,
+        # readable later even after it's gone (e.g. a human removed it
+        # directly, with no chance for the bot's own removal logic to
+        # persist it at that moment).
+        status.set_account_type("Apex Trader Funding", "PAAPEX0001", "LIVE")
+        status.mark_portfolio_removed("Apex Trader Funding", "PAAPEX0001", "removed by a human")
+        self.assertEqual(status.get_account_type("Apex Trader Funding", "PAAPEX0001"), "LIVE")
+
+    def test_a_later_read_updates_the_recorded_type(self):
+        status.set_account_type("Apex Trader Funding", "PAAPEX0001", "EVAL")
+        status.set_account_type("Apex Trader Funding", "PAAPEX0001", "LIVE")
+        self.assertEqual(status.get_account_type("Apex Trader Funding", "PAAPEX0001"), "LIVE")
+
+    def test_can_be_cleared_with_none(self):
+        status.set_account_type("Apex Trader Funding", "PAAPEX0001", "LIVE")
+        status.set_account_type("Apex Trader Funding", "PAAPEX0001", None)
+        self.assertIsNone(status.get_account_type("Apex Trader Funding", "PAAPEX0001"))
+
+
+class ListTrackedAccountsTests(_TempStatusFileTestCase):
+    def test_empty_when_nothing_recorded_yet(self):
+        self.assertEqual(status.list_tracked_accounts(), [])
+
+    def test_lists_every_account_with_recorded_history(self):
+        status.record_daily_equity("Apex Trader Funding", "PAAPEX0001", date="2026-08-01", equity=50500)
+        status.record_daily_equity("TopStep", "TS0001", date="2026-08-01", equity=27000)
+        self.assertEqual(
+            set(status.list_tracked_accounts()),
+            {("Apex Trader Funding", "PAAPEX0001"), ("TopStep", "TS0001")},
+        )
+
+    def test_includes_an_account_with_no_current_tradinggenerator_portfolio(self):
+        # The whole point: an account removed from TG (e.g. qualified for
+        # removal, or a human removed it directly) must stay listed here --
+        # Second Withdrawal detection needs to keep watching it.
+        status.set_account_type("Apex Trader Funding", "PAAPEX0001", "LIVE")
+        status.mark_portfolio_removed("Apex Trader Funding", "PAAPEX0001", "qualified for removal")
+        self.assertEqual(status.list_tracked_accounts(), [("Apex Trader Funding", "PAAPEX0001")])
+
+    def test_filters_by_account_type(self):
+        status.set_account_type("Apex Trader Funding", "PAAPEX0001", "LIVE")
+        status.set_account_type("Apex Trader Funding", "PAAPEX0002", "EVAL")
+        self.assertEqual(
+            status.list_tracked_accounts(account_type="LIVE"),
+            [("Apex Trader Funding", "PAAPEX0001")],
+        )
+        self.assertEqual(
+            status.list_tracked_accounts(account_type="EVAL"),
+            [("Apex Trader Funding", "PAAPEX0002")],
+        )
+
+    def test_an_account_with_no_recorded_type_is_excluded_when_filtering(self):
+        # No recorded type means "unknown" -- never guessed as a match for
+        # any specific filter, even though it's still listed unfiltered.
+        status.record_daily_equity("Apex Trader Funding", "PAAPEX0001", date="2026-08-01", equity=50500)
+        self.assertEqual(status.list_tracked_accounts(account_type="LIVE"), [])
+        self.assertEqual(status.list_tracked_accounts(), [("Apex Trader Funding", "PAAPEX0001")])
+
+
 if __name__ == "__main__":
     unittest.main()
