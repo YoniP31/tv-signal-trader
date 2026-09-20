@@ -56,17 +56,94 @@ def is_tradovate_connected(driver):
     return status == "connected"
 
 
-def _wait_for_new_tab(driver, existing_tabs, timeout=10):
-    """Polls until a tab not in `existing_tabs` appears, returning its
-    handle, or None on timeout."""
+# How long each stage of connect_tradovate waits, in seconds. Deliberately
+# generous: this runs on slow, high-latency VPS machines, where every one of
+# these stages has been seen to take far longer than on a fast desktop, and
+# a too-short wait shows up as a failed login on a perfectly healthy account.
+_LOGIN_WINDOW_TIMEOUT = 30   # for Tradovate's login window to open after Connect (was 10)
+_LOGIN_FIELDS_TIMEOUT = 45   # for its login form to render (was: looked once, no wait at all)
+_LOGIN_CLOSE_TIMEOUT = 45    # for the window to close after Login is clicked (was 15)
+_CONNECTED_TIMEOUT = 30      # for TradingView to show "connected" afterward (was 15)
+
+# Once a new window has appeared, how much longer to keep looking for one
+# that's actually on Tradovate before settling for the first new window.
+_LOGIN_WINDOW_URL_GRACE = 5
+
+
+def _find_tradovate_login_window(driver, existing_tabs, timeout=_LOGIN_WINDOW_TIMEOUT):
+    """Waits for the window that clicking Connect opens and returns its
+    handle, or None if none appears within `timeout` seconds.
+
+    If more than one new window shows up (e.g. an unrelated popup alongside
+    it), prefers the one whose URL is Tradovate's rather than taking
+    whichever comes first -- typing credentials into the wrong window is a
+    failed login. Falls back to the first new window if none reads as
+    Tradovate within _LOGIN_WINDOW_URL_GRACE seconds of the first appearing
+    (a fresh popup sits on about:blank until it navigates).
+
+    Probing switches the driver onto each new window in turn, so on a None
+    return the driver may no longer be on the window it started on --
+    callers must switch back themselves."""
     elapsed = 0.0
-    while elapsed < timeout:
-        new_tabs = set(driver.window_handles) - existing_tabs
-        if new_tabs:
-            return next(iter(new_tabs))
+    first_seen_at = None
+    while True:
+        new_tabs = [h for h in driver.window_handles if h not in existing_tabs]
+        for handle in new_tabs:
+            try:
+                driver.switch_to.window(handle)
+                if "tradovate" in (driver.current_url or "").lower():
+                    return handle
+            except Exception:
+                continue  # closed itself mid-probe
+        if new_tabs and first_seen_at is None:
+            first_seen_at = elapsed
+        if new_tabs and elapsed - first_seen_at >= _LOGIN_WINDOW_URL_GRACE:
+            return new_tabs[0]
+        if elapsed >= timeout:
+            return new_tabs[0] if new_tabs else None
         time.sleep(0.5)
         elapsed += 0.5
-    return None
+
+
+def _wait_for_login_fields(driver, login_tab, timeout=_LOGIN_FIELDS_TIMEOUT):
+    """Waits for Tradovate's login form to render in `login_tab`. Returns:
+      - ("ready", (username_el, password_el)) once both fields are showing
+      - ("closed", None) if the window went away on its own while waiting
+      - ("timeout", None) if the form never appeared within `timeout` seconds
+
+    Actively re-selects and focuses the login window on every poll rather
+    than trusting that the browser (or one earlier switch_to.window) left
+    the driver pointed at it -- looking for the fields on the wrong window
+    is indistinguishable from the form simply not being there."""
+    elapsed = 0.0
+    while True:
+        if login_tab not in driver.window_handles:
+            return "closed", None
+        try:
+            driver.switch_to.window(login_tab)
+            driver.execute_script("window.focus();")
+            username_inp = driver.find_element(By.ID, "name-input")
+            password_inp = driver.find_element(By.ID, "password-input")
+            if username_inp.is_displayed() and password_inp.is_displayed():
+                return "ready", (username_inp, password_inp)
+        except Exception:
+            pass  # not rendered yet (or the window just changed) -- poll again
+        if elapsed >= timeout:
+            return "timeout", None
+        time.sleep(0.5)
+        elapsed += 0.5
+
+
+def _describe_login_window(driver, login_tab):
+    """Logs where the login window actually is -- so the next time the form
+    isn't found, the log says whether it was still loading, sitting on some
+    other page, or missing entirely, instead of leaving it to guesswork."""
+    try:
+        driver.switch_to.window(login_tab)
+        print(f"  [diag] login window URL: {driver.current_url!r}, title: {driver.title!r}, "
+              f"windows open: {len(driver.window_handles)}")
+    except Exception as exc:
+        print(f"  [diag] could not inspect the login window: {exc!r}")
 
 
 def _wait_for_tab_to_close(driver, tab_handle, timeout=15):
@@ -80,16 +157,32 @@ def _wait_for_tab_to_close(driver, tab_handle, timeout=15):
     return False
 
 
-def _submit_tradovate_login(driver, username, password):
+def _submit_tradovate_login(driver, username, password, login_tab=None, timeout=_LOGIN_FIELDS_TIMEOUT):
     """Fills and submits Tradovate's own login form -- a separate site
     (trader.tradovate.com) opened in a new tab by the Connect flow, not
-    part of TradingView itself."""
-    try:
-        username_inp = driver.find_element(By.ID, "name-input")
-        password_inp = driver.find_element(By.ID, "password-input")
-    except Exception:
-        print("  Tradovate login fields not found")
+    part of TradingView itself.
+
+    Waits up to `timeout` seconds for the form to actually render first
+    (see _wait_for_login_fields) instead of looking once and giving up:
+    the window's handle exists the moment it opens, but the form is a
+    JS-rendered page that can take many seconds to appear on a slow
+    machine. `login_tab` defaults to whichever window the driver is on.
+
+    Returns True once submitted -- or if the window closed by itself while
+    waiting (e.g. a remembered session signed straight in), since there's
+    then nothing left to submit and the caller's own connection check is
+    the real arbiter of whether that worked. False if the form never
+    appeared."""
+    login_tab = login_tab or driver.current_window_handle
+    state, fields = _wait_for_login_fields(driver, login_tab, timeout=timeout)
+    if state == "closed":
+        print("  Tradovate login window closed on its own - nothing to submit.")
+        return True
+    if state == "timeout":
+        _describe_login_window(driver, login_tab)
+        print(f"  Tradovate login fields not found after {timeout}s")
         return False
+    username_inp, password_inp = fields
 
     panel.set_field(driver, username_inp, username)
     panel.set_field(driver, password_inp, password)
@@ -105,7 +198,58 @@ def _submit_tradovate_login(driver, username, password):
     return False
 
 
-def connect_tradovate(driver, username, password, company=None, timeout=15):
+def _find_demo_option(driver, timeout=5):
+    """The 'Demo' option of the broker login dialog's Live/Demo segmented
+    control, or None if it never shows up within `timeout` seconds.
+
+    Found via the dialog's aria-label and the control's ARIA radio roles
+    (role="radio" + aria-checked) -- not the hashed CSS-module classes the
+    dialog is otherwise built from, which look build-specific. Polled
+    rather than looked up once: the dialog is still rendering for a moment
+    right after the broker tile is clicked."""
+    elapsed = 0.0
+    while True:
+        try:
+            dialog = driver.find_element(By.CSS_SELECTOR, '[aria-label="Broker login dialog"]')
+            for option in dialog.find_elements(By.CSS_SELECTOR, '[role="radiogroup"] [role="radio"]'):
+                if option.text.strip().lower() == "demo":
+                    return option
+        except Exception:
+            pass
+        if elapsed >= timeout:
+            return None
+        time.sleep(0.5)
+        elapsed += 0.5
+
+
+def _ensure_demo_selected(driver):
+    """Makes sure the broker login dialog's Live/Demo toggle is on 'Demo'
+    before Connect is clicked, clicking it if it isn't. Returns True once
+    Demo is confirmed selected (read back from aria-checked, not assumed
+    from the click), False if it can't be found or won't take -- the
+    caller must then not click Connect, since that would log into the
+    Live environment instead."""
+    option = _find_demo_option(driver)
+    if option is None:
+        print("  FAILED: the broker dialog's 'Demo' option was not found.")
+        return False
+    if option.get_attribute("aria-checked") == "true":
+        print("  Demo mode already selected [OK]")
+        return True
+
+    driver.execute_script("arguments[0].click();", option)
+    humanize.pause(0.5, 1.0)
+    # Re-find rather than reuse the old reference: the control re-renders
+    # on selection, so it may no longer be the same element.
+    option = _find_demo_option(driver, timeout=3)
+    if option is None or option.get_attribute("aria-checked") != "true":
+        print("  FAILED: clicked 'Demo' but it doesn't show as selected.")
+        return False
+    print("  Selected Demo mode [OK]")
+    return True
+
+
+def connect_tradovate(driver, username, password, company=None, timeout=_CONNECTED_TIMEOUT):
     """Opens the broker-connection flow, logs into Tradovate with the given
     credentials, and confirms the connection actually took.
 
@@ -118,10 +262,12 @@ def connect_tradovate(driver, username, password, company=None, timeout=15):
     disconnect/reconnect sequence reads as an opaque wall of low-level DOM
     polling with no indication of what's actually being attempted or why.
 
-    Deliberately does not touch the broker-selection dialog's Live/Demo
-    toggle -- picking the wrong one could connect a different account/mode
-    than intended, so that choice is left at whatever TradingView already
-    has pre-selected (its own remembered state) rather than guessed at here.
+    Always connects in Demo mode: the broker dialog's Live/Demo toggle is
+    checked and, if needed, switched to 'Demo' before Connect is clicked
+    (see _ensure_demo_selected) -- rather than left at whatever TradingView
+    happened to remember from last time, which could otherwise silently
+    connect the wrong environment. If Demo can't be confirmed, this fails
+    without clicking Connect at all.
     """
     label = f"{company} Tradovate account" if company else "Tradovate account"
     if is_tradovate_connected(driver):
@@ -147,6 +293,9 @@ def connect_tradovate(driver, username, password, company=None, timeout=15):
     driver.execute_script("arguments[0].click();", tile)
     humanize.long_pause(1.0, 1.5)
 
+    if not _ensure_demo_selected(driver):
+        return False
+
     clicked = False
     for b in driver.find_elements(By.TAG_NAME, "button"):
         try:
@@ -160,17 +309,23 @@ def connect_tradovate(driver, username, password, company=None, timeout=15):
         print("  FAILED: Connect button not found.")
         return False
 
-    # Clicking Connect opens Tradovate's own login page in a new tab.
-    login_tab = _wait_for_new_tab(driver, tabs_before, timeout=10)
+    # Clicking Connect opens Tradovate's own login page in a new window.
+    login_tab = _find_tradovate_login_window(driver, tabs_before, timeout=_LOGIN_WINDOW_TIMEOUT)
     if login_tab is None:
-        print("  FAILED: Tradovate login tab never opened.")
+        print(f"  FAILED: Tradovate login tab never opened (waited {_LOGIN_WINDOW_TIMEOUT}s).")
+        try:
+            driver.switch_to.window(tv_tab)  # probing may have left the driver elsewhere
+        except Exception:
+            pass
         return False
 
+    # Actively select it -- don't rely on the browser having switched to it
+    # on its own (see _wait_for_login_fields, which keeps re-selecting it).
     driver.switch_to.window(login_tab)
     humanize.long_pause(1.0, 2.0)
 
     print("  Entering Tradovate login credentials...")
-    if not _submit_tradovate_login(driver, username, password):
+    if not _submit_tradovate_login(driver, username, password, login_tab=login_tab):
         print("  FAILED: could not submit Tradovate login form.")
         try:
             driver.switch_to.window(tv_tab)
@@ -181,8 +336,9 @@ def connect_tradovate(driver, username, password, company=None, timeout=15):
     # On success the login tab closes itself and focus is expected to
     # return to TradingView -- but that's not guaranteed, so wait for it to
     # actually close and switch back explicitly rather than assume it did.
-    if not _wait_for_tab_to_close(driver, login_tab, timeout=15):
-        print("  FAILED: Tradovate login tab never closed - login may have failed.")
+    if not _wait_for_tab_to_close(driver, login_tab, timeout=_LOGIN_CLOSE_TIMEOUT):
+        print(f"  FAILED: Tradovate login tab never closed (waited {_LOGIN_CLOSE_TIMEOUT}s) - "
+              "login may have failed.")
         try:
             driver.switch_to.window(tv_tab)
         except Exception:
