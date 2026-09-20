@@ -1,9 +1,11 @@
 import random
 import time
 
+from selenium.common.exceptions import ElementClickInterceptedException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 
+from . import ads
 from . import config
 from . import humanize
 from . import panel
@@ -494,6 +496,36 @@ def load_chart_for_signal(driver, asset, contract_size):
 
 
 def place_order(driver, tp_ticks=150, sl_ticks=150, side="buy", units=1):
+    """Runs _place_order_once, retrying it exactly once if a TradingView
+    ad/upsell popup (see ads.py) intercepts one of its clicks -- the
+    watchdog script ads.WATCHDOG_SCRIPT (injected once per browser
+    session, see browser.create_driver) is the primary defense and
+    normally closes a popup within a couple hundred milliseconds of it
+    appearing, well before a real click could land on it; this is only
+    the rare fallback for the gap between that debounce window and a
+    click actually landing. Safe to retry the whole sequence from
+    scratch: an intercepted click never actually registers, so nothing
+    upstream of it (side/units/TP/SL entry) needs redoing differently,
+    and no order can have been placed already for this attempt to
+    duplicate.
+    """
+    for attempt in range(2):
+        try:
+            return _place_order_once(driver, tp_ticks, sl_ticks, side, units)
+        except ElementClickInterceptedException:
+            if attempt == 1:
+                print("  FAILED: a click was intercepted (likely a TradingView popup) even after "
+                      "already dismissing one and retrying once. Aborting.")
+                return False
+            if ads.dismiss_ads(driver):
+                print("  [WARN] A click was intercepted by a popup - dismissed it, retrying...")
+            else:
+                print("  [WARN] A click was intercepted, but no known ad/popup close button was "
+                      "found either - retrying once anyway in case it clears on its own.")
+    return False
+
+
+def _place_order_once(driver, tp_ticks, sl_ticks, side, units):
     # 1. Select Buy/Sell side, then confirm the order ticket actually opened.
     # It won't if e.g. no broker (Tradovate) connection is active -- in that
     # case every later step would just be flailing against a chart with no

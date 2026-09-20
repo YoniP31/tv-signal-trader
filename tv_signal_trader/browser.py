@@ -6,6 +6,7 @@ import time
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 
+from . import ads
 from . import config
 from .logging_utils import timestamped_print as print
 
@@ -63,6 +64,15 @@ def create_driver():
             Object.defineProperty(navigator, 'plugins',   { get: () => [1,2,3,4,5] });
             Object.defineProperty(navigator, 'languages', { get: () => ['en-US','en'] });
         """
+    })
+    # Runs on every document/frame this session ever loads (including
+    # after a crash-triggered relaunch, since that calls create_driver()
+    # fresh) -- see ads.WATCHDOG_SCRIPT's own docstring for why this is
+    # the primary defense against TradingView's ad/upsell popups, with
+    # ads.dismiss_ads() as a reactive fallback for the rare gap this
+    # doesn't catch in time.
+    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+        "source": ads.WATCHDOG_SCRIPT
     })
     return driver
 
