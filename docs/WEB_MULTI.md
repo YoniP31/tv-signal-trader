@@ -46,14 +46,14 @@ ACCOUNT_50K_MAX_BALANCE_LIVE=53500
 
 ## Daily profit/loss limits
 
-An optional per-account cap on today's profit and/or loss, read from Tradovate's broker-panel Account Summary tab ("Total P/L", which resets daily on Tradovate's side). Once an account's Total P/L reaches either limit, that account stops opening new trades for the rest of the day — quarantined the same way as a manual close or a rejected order — but keeps reporting/monitoring any position already open normally. Set in `.env`:
+A required per-account cap on today's profit and loss, read from Tradovate's broker-panel Account Summary tab ("Total P/L", which resets daily on Tradovate's side). Once an account's Total P/L reaches either limit, that account stops opening new trades for the rest of the day — quarantined the same way as a manual close or a rejected order — but keeps reporting/monitoring any position already open normally. Set in `.env`:
 
 ```
 DAILY_PROFIT_LIMIT=500
 DAILY_LOSS_LIMIT=500
 ```
 
-`DAILY_LOSS_LIMIT` is a positive number (the max acceptable loss) — the account is quarantined once Total P/L drops to/below its negative. Leave either (or both) commented out (the default) to disable that side entirely.
+Both are **required** — a blank, missing, or commented-out value is flagged as an error, and `web`/`web_multi`/`test` won't run until it's set (the app asks for it right there in the terminal if it's blank, and saves the answer to `.env`). There is no way to disable a side. `DAILY_LOSS_LIMIT` is a positive number (the max acceptable loss) — the account is quarantined once Total P/L drops to/below its negative.
 
 **How to test:** set a limit just inside an account's current Total P/L (e.g. `DAILY_PROFIT_LIMIT` just below it if currently profitable, or `DAILY_LOSS_LIMIT` just below the current loss if currently negative), run `web_multi`, and confirm the console prints that the account hit its daily profit/loss limit and is quarantined, rather than opening the next signal for it.
 

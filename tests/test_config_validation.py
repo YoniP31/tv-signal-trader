@@ -6,11 +6,17 @@ that keep a malformed value from crashing the app outright. Run with:
 """
 
 import os
+import re
 import tempfile
 import unittest
 from unittest.mock import patch
 
 from tv_signal_trader import config
+
+# Valid values for the settings in config.REQUIRED_ENV_KEYS -- filled in by
+# _write_env below so the many tests that only care about some *other*
+# setting aren't each drowned in "required limit missing" problems.
+_VALID_REQUIRED_VALUES = {"DAILY_PROFIT_LIMIT": "500", "DAILY_LOSS_LIMIT": "300"}
 
 
 class _TempEnvFileTestCase(unittest.TestCase):
@@ -29,15 +35,25 @@ class _TempEnvFileTestCase(unittest.TestCase):
         self._env_file_patcher.start()
         self.addCleanup(self._env_file_patcher.stop)
 
-    def _write_env(self, content):
+    def _write_env(self, content, fill_required=True):
+        """Writes `content` as the temp .env and reloads config. Unless
+        `fill_required=False`, any required setting (config.REQUIRED_ENV_KEYS)
+        the content doesn't itself *set* -- a commented-out line doesn't
+        count -- is added with a valid value first."""
+        if fill_required:
+            for key, value in _VALID_REQUIRED_VALUES.items():
+                if not re.search(rf"(?m)^\s*{key}\s*=", content):
+                    content = f"{key}={value}\n" + content
         with open(self.env_path, "w", encoding="utf-8") as f:
             f.write(content)
         config._reload_env()
 
 
 class ValidateEnvTests(_TempEnvFileTestCase):
-    def test_blank_env_has_no_problems(self):
-        self._write_env("")
+    def test_an_env_with_only_the_required_settings_has_no_problems(self):
+        # Every other setting is optional -- blank just means "use the
+        # built-in default" / "feature disabled".
+        self._write_env("")  # _write_env fills in just the required limits
         self.assertEqual(config.validate_env(), [])
 
     def test_well_formed_values_have_no_problems(self):
@@ -163,6 +179,57 @@ class ValidateEnvTests(_TempEnvFileTestCase):
 
     def test_well_formed_flip_mode_reentry_buffer_is_not_flagged(self):
         self._write_env("FLIP_MODE_REENTRY_BUFFER=1500\n")
+        self.assertEqual(config.validate_env(), [])
+
+
+class RequiredSettingsTests(_TempEnvFileTestCase):
+    """The daily profit/loss limits are required: unlike every other
+    setting, blank isn't 'use the default' -- it's an error."""
+
+    def _flagged(self):
+        return {p[0]: p for p in config.validate_env()}
+
+    def test_the_required_settings_are_exactly_the_two_daily_limits(self):
+        self.assertEqual(set(config.REQUIRED_ENV_KEYS), {"DAILY_PROFIT_LIMIT", "DAILY_LOSS_LIMIT"})
+
+    def test_an_empty_env_flags_both_limits(self):
+        self._write_env("", fill_required=False)
+        self.assertEqual(set(self._flagged()), {"DAILY_PROFIT_LIMIT", "DAILY_LOSS_LIMIT"})
+
+    def test_a_key_left_blank_is_flagged(self):
+        self._write_env("DAILY_PROFIT_LIMIT=\nDAILY_LOSS_LIMIT=300\n", fill_required=False)
+        self.assertEqual(set(self._flagged()), {"DAILY_PROFIT_LIMIT"})
+
+    def test_whitespace_only_counts_as_blank(self):
+        self._write_env("DAILY_PROFIT_LIMIT=   \nDAILY_LOSS_LIMIT=300\n", fill_required=False)
+        self.assertEqual(set(self._flagged()), {"DAILY_PROFIT_LIMIT"})
+
+    def test_a_commented_out_limit_is_flagged(self):
+        # How the old shipped template had them -- commented out meant
+        # "disabled". Now it means "missing".
+        self._write_env("#DAILY_PROFIT_LIMIT=500\n#DAILY_LOSS_LIMIT=500\n", fill_required=False)
+        self.assertEqual(set(self._flagged()), {"DAILY_PROFIT_LIMIT", "DAILY_LOSS_LIMIT"})
+
+    def test_the_problem_says_it_is_required_and_gives_an_example(self):
+        self._write_env("", fill_required=False)
+        key, raw, message, example = self._flagged()["DAILY_LOSS_LIMIT"]
+        self.assertEqual(raw, "")
+        self.assertIn("required", message)
+        self.assertIn("dollar amount", example)
+
+    def test_valid_values_for_both_limits_pass(self):
+        self._write_env("DAILY_PROFIT_LIMIT=500\nDAILY_LOSS_LIMIT=300\n", fill_required=False)
+        self.assertEqual(config.validate_env(), [])
+
+    def test_a_malformed_value_is_still_flagged_with_its_format_message(self):
+        self._write_env("DAILY_PROFIT_LIMIT=abc\nDAILY_LOSS_LIMIT=300\n", fill_required=False)
+        key, raw, message, _example = self._flagged()["DAILY_PROFIT_LIMIT"]
+        self.assertEqual(raw, "abc")
+        self.assertIn("plain number", message)
+
+    def test_optional_settings_may_still_be_blank(self):
+        # Required-ness must not have leaked onto the opt-in settings.
+        self._write_env("SESSION_START_TIME=\nMPPC=\nTP_CAP_BUFFER_MIN=\n")
         self.assertEqual(config.validate_env(), [])
 
 

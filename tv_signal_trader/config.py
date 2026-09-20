@@ -311,6 +311,15 @@ def _balance_tier_field_specs():
 # below. TRADINGGENERATOR_USERNAME/PASSWORD and the per-company Tradovate
 # credentials aren't included: those are plain strings with no format to
 # get wrong, just present-or-not (handled by setup_wizard instead).
+# Settings that must be present and non-blank. validate_env() reports a
+# blank/missing/commented-out one as an error -- unlike every other setting
+# here, where blank means "use the built-in default" or "feature disabled"
+# -- and setup_wizard.check_env_validity() will not let a command proceed
+# while one is still unresolved (no "continue anyway"). The daily P&L limits
+# are the accounts' circuit breakers: running with them silently disabled by
+# an empty value is not a supported configuration.
+REQUIRED_ENV_KEYS = ("DAILY_PROFIT_LIMIT", "DAILY_LOSS_LIMIT")
+
 _ENV_FIELD_SPECS = _balance_tier_field_specs() + [
     ("SESSION_START_TIME", _check_time, 'a 24-hour "HH:MM" time, e.g. "09:00"'),
     ("SESSION_END_TIME", _check_time, 'a 24-hour "HH:MM" time, e.g. "17:00"'),
@@ -360,15 +369,19 @@ def validate_env():
     falling back to a default with no explanation (see _safe_float/
     _safe_positive_int above).
 
-    Blank is always valid -- it means "use the built-in default", or
-    "feature disabled" for the opt-in settings -- only a *present but
-    malformed* value is reported. Returns a list of (env_key, raw_value,
-    problem_message, example) tuples, empty if everything checks out.
+    Blank is valid for every setting except REQUIRED_ENV_KEYS -- it means
+    "use the built-in default", or "feature disabled" for the opt-in
+    settings -- so otherwise only a *present but malformed* value is
+    reported. A blank, missing, or commented-out required setting is
+    reported too. Returns a list of (env_key, raw_value, problem_message,
+    example) tuples, empty if everything checks out.
     """
     problems = []
     for key, check, example in _ENV_FIELD_SPECS:
         raw = _env.get(key, "").strip()
         if not raw:
+            if key in REQUIRED_ENV_KEYS:
+                problems.append((key, "", "is required and can't be left blank", example))
             continue
         try:
             check(raw)
@@ -590,12 +603,13 @@ def _reload_env():
         _env.get("MPPC"), _DEFAULT_MAX_POSITIONS_PER_COMPANY
     )
 
-    # web_multi only. Both unset by default (no limit) -- opt-in risk
-    # controls, not universal defaults like the balance tiers above.
+    # Both are REQUIRED (see REQUIRED_ENV_KEYS): validate_env() flags a
+    # blank/missing/malformed one and check_env_validity() blocks web/
+    # web_multi/test until it's set, so None here only ever means "not
+    # validated yet" (or a test poking config directly) -- the trading code's
+    # `is not None` guards are defensive, not a supported "no limit" mode.
     # DAILY_LOSS_LIMIT is a positive $ amount (the max acceptable loss),
-    # compared against today's P&L going negative past it. A malformed
-    # value falls back to None (disabled), same reasoning as elsewhere --
-    # validate_env() is what actually flags it to the user.
+    # compared against today's P&L going negative past it.
     DAILY_PROFIT_LIMIT = _safe_float(_env.get("DAILY_PROFIT_LIMIT", ""), None)
     DAILY_LOSS_LIMIT = _safe_float(_env.get("DAILY_LOSS_LIMIT", ""), None)
 

@@ -124,6 +124,13 @@ class EnsureConfiguredAdminCodeTests(_TempEnvFileTestCase):
 
 
 class CheckEnvValidityTests(_TempEnvFileTestCase):
+    def setUp(self):
+        super().setUp()
+        # The two daily limits are required -- a temp .env without them is
+        # never "valid" now, so every test here starts from one that has
+        # them (the required-setting behavior itself is covered below).
+        config.set_env_values({"DAILY_PROFIT_LIMIT": "500", "DAILY_LOSS_LIMIT": "300"})
+
     def test_returns_true_immediately_when_nothing_is_wrong(self):
         with patch("builtins.input") as mock_input:
             result = setup_wizard.check_env_validity()
@@ -162,6 +169,71 @@ class CheckEnvValidityTests(_TempEnvFileTestCase):
             result = setup_wizard.check_env_validity()
         self.assertTrue(result)
         self.assertEqual(config.get_env_value("MPPC"), "4")
+
+
+class RequiredEnvSettingsTests(_TempEnvFileTestCase):
+    """The daily profit/loss limits (config.REQUIRED_ENV_KEYS) can't be
+    left blank, and -- unlike every other problem -- can never be skipped
+    past with "continue anyway": that escape hatch means "use the built-in
+    default", and for these there deliberately isn't one."""
+
+    def test_missing_limits_are_prompted_for_and_saved(self):
+        # Order follows config._ENV_FIELD_SPECS: profit limit, then loss limit.
+        with patch("builtins.input", side_effect=["500", "300"]):
+            result = setup_wizard.check_env_validity()
+        self.assertTrue(result)
+        self.assertEqual(config.get_env_value("DAILY_PROFIT_LIMIT"), "500")
+        self.assertEqual(config.get_env_value("DAILY_LOSS_LIMIT"), "300")
+        self.assertEqual(config.validate_env(), [])
+
+    def test_a_blank_limit_the_user_skips_aborts_the_command(self):
+        # Skipping the profit limit, filling in the loss limit. No third
+        # prompt: the "continue anyway?" question must never be asked.
+        with patch("builtins.input", side_effect=["", "300"]) as mock_input:
+            result = setup_wizard.check_env_validity()
+        self.assertFalse(result)
+        self.assertEqual(mock_input.call_count, 2)
+        self.assertEqual(config.get_env_value("DAILY_LOSS_LIMIT"), "300")
+        self.assertEqual(config.get_env_value("DAILY_PROFIT_LIMIT"), "")
+
+    def test_skipping_both_limits_never_offers_to_continue_anyway(self):
+        # If "continue anyway?" were asked there'd be a third input() call,
+        # and this side_effect list would run out and raise.
+        with patch("builtins.input", side_effect=["", ""]) as mock_input:
+            result = setup_wizard.check_env_validity()
+        self.assertFalse(result)
+        self.assertEqual(mock_input.call_count, 2)
+
+    def test_a_malformed_required_limit_that_stays_unfixed_also_aborts(self):
+        config.set_env_values({"DAILY_PROFIT_LIMIT": "lots", "DAILY_LOSS_LIMIT": "300"})
+        with patch("builtins.input", side_effect=[""]) as mock_input:
+            result = setup_wizard.check_env_validity()
+        self.assertFalse(result)
+        self.assertEqual(mock_input.call_count, 1)
+        self.assertEqual(config.get_env_value("DAILY_PROFIT_LIMIT"), "lots")
+
+    def test_re_entering_an_invalid_required_value_is_rejected_before_moving_on(self):
+        config.set_env_values({"DAILY_LOSS_LIMIT": "300"})
+        with patch("builtins.input", side_effect=["five hundred", "500"]):
+            result = setup_wizard.check_env_validity()
+        self.assertTrue(result)
+        self.assertEqual(config.get_env_value("DAILY_PROFIT_LIMIT"), "500")
+
+    def test_the_prompt_says_the_setting_is_required_not_skippable(self):
+        with patch("builtins.input", side_effect=["500", "300"]) as mock_input:
+            setup_wizard.check_env_validity()
+        prompts = [call.args[0] for call in mock_input.call_args_list]
+        self.assertTrue(all("required" in p for p in prompts), prompts)
+        self.assertFalse(any("Enter to skip" in p for p in prompts), prompts)
+
+    def test_an_optional_setting_still_gets_the_continue_anyway_option(self):
+        # Required-ness must not have removed the escape hatch for
+        # everything else.
+        config.set_env_values({
+            "DAILY_PROFIT_LIMIT": "500", "DAILY_LOSS_LIMIT": "300", "MPPC": "three",
+        })
+        with patch("builtins.input", side_effect=["", "y"]):
+            self.assertTrue(setup_wizard.check_env_validity())
 
 
 if __name__ == "__main__":

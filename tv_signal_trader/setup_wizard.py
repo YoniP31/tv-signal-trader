@@ -21,7 +21,9 @@ def check_env_validity():
     in the terminal rather than leaving the user to go hunt down a typo in
     a text editor. Returns True if it's safe to proceed (nothing wrong, or
     the user chose to continue anyway), False if the command should be
-    aborted (the user backed out without fixing everything).
+    aborted (the user backed out without fixing everything). A required
+    setting (config.REQUIRED_ENV_KEYS) that's still blank/invalid always
+    means False -- "continue anyway" isn't offered for those.
     """
     problems = config.validate_env()
     if not problems:
@@ -43,6 +45,16 @@ def check_env_validity():
         print("[OK] .env is valid now.\n")
         return True
 
+    # A required setting (see config.REQUIRED_ENV_KEYS) never gets the
+    # "continue anyway" escape hatch below -- that hatch means "fall back to
+    # the built-in default", and for these there is deliberately none:
+    # proceeding would start trading with no daily limit at all.
+    missing_required = [key for key in unresolved if key in config.REQUIRED_ENV_KEYS]
+    if missing_required:
+        print(f"\n[FAIL] Required setting(s) still missing or invalid: {', '.join(missing_required)}. "
+              "They can't be skipped - set them (here, or in .env) and run the command again.\n")
+        return False
+
     print(f"\n[WARN] Still unresolved: {', '.join(unresolved)}.")
     choice = input("Continue anyway using built-in defaults for those? [y/N]: ").strip().lower()
     print()
@@ -58,8 +70,9 @@ def _fix_one_env_problem(key, raw, message, example):
     print(f"\n{key}{current}")
     print(f"  Problem: {message}")
     print(f"  Example: {example}")
+    hint = "required - Enter cancels the command" if key in config.REQUIRED_ENV_KEYS else "Enter to skip"
     while True:
-        new_raw = input(f"  New value for {key} (Enter to skip): ").strip()
+        new_raw = input(f"  New value for {key} ({hint}): ").strip()
         if not new_raw:
             return False
         config.set_env_values({key: new_raw})
