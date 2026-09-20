@@ -1,5 +1,6 @@
 import os
 import signal
+import sys
 import time
 
 from . import browser
@@ -37,6 +38,31 @@ def _next_restart_streak(elapsed_seconds, streak):
     if elapsed_seconds < _RAPID_RESTART_WINDOW_SECONDS:
         return streak + 1
     return 0
+
+
+# Commands that may be passed on the command line (e.g. `tv-signal-trader.exe
+# web_multi`) to start running immediately at launch instead of waiting at
+# the '>' prompt -- what lets an unattended launcher (a Scheduled Task, see
+# the remote-deployment tooling) bring the bot fully back up after an
+# update or reboot with nobody there to type it. Only the two trading-loop
+# commands: 'test'/'add_accounts'/'setup' are interactive by nature and
+# have no business being auto-run.
+_AUTO_START_COMMANDS = ("web", "web_multi")
+
+
+def _startup_command(argv):
+    """The command named on the command line (`argv` is sys.argv), or None
+    to just wait at the '>' prompt as usual -- i.e. no argument given, or
+    one that isn't in _AUTO_START_COMMANDS (warned about, then ignored, so
+    a typo never silently does something unintended)."""
+    if len(argv) < 2:
+        return None
+    requested = argv[1].strip().lower()
+    if requested in _AUTO_START_COMMANDS:
+        return requested
+    print(f"[WARN] Ignoring unknown startup command '{argv[1]}' - expected one of "
+          f"{', '.join(_AUTO_START_COMMANDS)}. Falling back to the '>' prompt.")
+    return None
 
 
 def _run_test_menu(driver, tv_tab, hide_tg_window=None, relaunch_browser=None):
@@ -487,6 +513,11 @@ def _run_add_accounts(driver, tv_tab, hide_tg_window=None):
 def main():
     setup_wizard.ensure_configured()
 
+    # Consumed exactly once, by the first pass through the '>' loop below --
+    # after that (including after a trading loop gives up and returns), it's
+    # back to a normal interactive prompt.
+    pending_startup_command = _startup_command(sys.argv)
+
     driver = browser.create_driver()
     tv_tab = driver.current_window_handle
     status.mark_app_started()
@@ -540,13 +571,17 @@ def main():
             return None
         return choice not in ("y", "yes")
 
-    def _resolve_hide_tg_window():
+    def _resolve_hide_tg_window(ask=True):
         # The regular-user build never asks and is never shown the window,
         # full stop -- not just defaulted to hidden, so it can't be flipped
         # visible by a stray config.py edit either. Only the admin build
-        # gets a say (see _ask_hide_tg_window above).
+        # gets a say (see _ask_hide_tg_window above) -- except when the
+        # command was auto-started from the command line (ask=False),
+        # where there's nobody to answer: falls back to the config default.
         if not config.IS_ADMIN_BUILD:
             return True
+        if not ask:
+            return None
         return _ask_hide_tg_window()
 
     def _run_trading_loop(**kwargs):
@@ -652,7 +687,14 @@ def main():
         else:
             print("\nCommands: 'web', 'web_multi', 'setup', 'quit'")
         while True:
-            cmd = input("> ").strip().lower()
+            if pending_startup_command:
+                cmd = pending_startup_command
+                pending_startup_command = None
+                interactive = False
+                print(f"\n[STARTUP] Running '{cmd}' automatically (given on the command line).")
+            else:
+                cmd = input("> ").strip().lower()
+                interactive = True
             with state.session.driver_lock:
                 if cmd == "web":
                     if not setup_wizard.check_env_validity():
@@ -662,14 +704,14 @@ def main():
                     # with the engine's existing "only one company engaged at
                     # a time" rule, that reproduces single-position-at-a-time
                     # behavior without a separate implementation to maintain.
-                    hide_tg_window = _resolve_hide_tg_window()
+                    hide_tg_window = _resolve_hide_tg_window(ask=interactive)
                     _run_trading_loop_with_auto_restart(
                         max_positions_per_company=1, command_name="web", hide_tg_window=hide_tg_window
                     )
                 elif cmd == "web_multi":
                     if not setup_wizard.check_env_validity():
                         continue
-                    hide_tg_window = _resolve_hide_tg_window()
+                    hide_tg_window = _resolve_hide_tg_window(ask=interactive)
                     _run_trading_loop_with_auto_restart(hide_tg_window=hide_tg_window)
                 elif cmd == "test" and config.IS_ADMIN_BUILD:
                     if not setup_wizard.check_env_validity():
