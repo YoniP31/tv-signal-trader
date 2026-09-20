@@ -123,6 +123,26 @@ def _run_test_menu(driver, tv_tab, hide_tg_window=None, relaunch_browser=None):
         driver.switch_to.window(tv_tab)
         trading.disconnect_tradovate(driver)
 
+    def _test_raise_bottom_panel():
+        driver.switch_to.window(tv_tab)
+
+        def describe(label):
+            measured = trading._measure_bottom_panel(driver)
+            if measured is None:
+                print(f"  {label}: panel not measurable (closed, or not on the page)")
+                return
+            print(f"  {label}: top edge {measured['top']:.0f}px of {measured['viewport']:.0f}px "
+                  f"({measured['top'] / measured['viewport']:.0%} down), height {measured['height']:.0f}px")
+
+        describe("Before")
+        if not trading._ensure_broker_panel_open(driver):  # raises it itself if it was low
+            print("  [FAIL] Could not open the broker panel.")
+            return
+        describe("After opening")
+        result = trading.raise_bottom_panel(driver)
+        describe("After raise_bottom_panel()")
+        print(f"  raise_bottom_panel() -> {result}")
+
     def _test_report(outcome):
         _tg_tab()
         company, portfolio = _active_company_portfolio()
@@ -267,6 +287,16 @@ def _run_test_menu(driver, tv_tab, hide_tg_window=None, relaunch_browser=None):
         "disconnect_tradovate": (
             "Disconnects whichever Tradovate account is currently connected.",
             _test_disconnect_tradovate,
+        ),
+        "raise_bottom_panel": (
+            "Opens the bottom broker panel if it's closed, then drags its resize handle up so "
+            "its top edge sits at the middle of the screen (it does this by itself whenever the "
+            "bot opens the panel -- this just lets you watch it and see the measurements). To "
+            "see it actually drag, first pull the panel down by hand, or resize the browser "
+            "window shorter. Prints the panel's position before/after and the result: "
+            "already_high / raised / partial (TradingView limited how tall it may get) / "
+            "failed / unavailable.",
+            _test_raise_bottom_panel,
         ),
         "report_tp": (
             "Clicks the 'Take Profit' Trade Result button. In TradingGenerator, select the "

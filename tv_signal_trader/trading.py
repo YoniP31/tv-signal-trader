@@ -1,7 +1,9 @@
 import random
 import time
+import weakref
 
 from selenium.common.exceptions import ElementClickInterceptedException
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 
@@ -838,6 +840,148 @@ def _place_order_once(driver, tp_ticks, sl_ticks, side, units):
     return True
 
 
+# Where the top edge of the bottom broker panel should sit, as a fraction of
+# the viewport's height (0.5 = the middle of the screen). On a small or
+# high-latency VPS the panel can come up so low that its controls can't be
+# pressed, so once it's open it's dragged up to here; it's left alone if it's
+# already at or above this line.
+_PANEL_TARGET_TOP_FRACTION = 0.5
+_PANEL_TOP_TOLERANCE_PX = 25   # "close enough" -- don't drag for a few pixels
+_PANEL_MIN_MOVE_PX = 5         # a drag that moved it less than this did nothing
+_PANEL_DRAG_STEPS = 12         # the drag is many small moves, not one jump
+_PANEL_MAX_RAISE_ATTEMPTS = 3  # per browser session -- see _maybe_raise_bottom_panel
+_PANEL_HANDLE_SELECTOR = "#bottom-area .bottom-widgetbar-handle"
+
+# Read-only, JS-only measurement (no element lookups), so it's cheap enough
+# to run every time the panel is used. Null if the panel or its resize
+# handle isn't in the page.
+_MEASURE_PANEL_JS = """
+    var area = document.getElementById('bottom-area');
+    var handle = document.querySelector('#bottom-area .bottom-widgetbar-handle');
+    if (!area || !handle) return null;
+    var rect = area.getBoundingClientRect();
+    return {viewport: window.innerHeight, top: rect.top, height: rect.height};
+"""
+
+# browser session (driver) -> how many drag attempts have been made in it.
+_panel_raise_attempts = weakref.WeakKeyDictionary()
+
+
+def _measure_bottom_panel(driver):
+    """{'viewport', 'top', 'height'} in CSS pixels for the bottom panel, or
+    None if it can't be measured (panel/handle missing, or an unexpected
+    reply)."""
+    try:
+        measured = driver.execute_script(_MEASURE_PANEL_JS)
+    except Exception:
+        return None
+    if not isinstance(measured, dict):
+        return None
+    try:
+        return {key: float(measured[key]) for key in ("viewport", "top", "height")}
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _drag_panel_handle_up(driver, handle, distance):
+    """Presses on the panel's resize handle and drags it `distance` pixels
+    up, in _PANEL_DRAG_STEPS small moves -- resize handlers listen for a
+    stream of pointermove events, and one big jump can be ignored. Real
+    (WebDriver-dispatched) pointer events, the same as a person dragging."""
+    step, remainder = divmod(distance, _PANEL_DRAG_STEPS)
+    actions = ActionChains(driver)
+    actions.move_to_element(handle).pause(0.2).click_and_hold().pause(0.15)
+    for i in range(_PANEL_DRAG_STEPS):
+        dy = step + (remainder if i == _PANEL_DRAG_STEPS - 1 else 0)
+        actions.move_by_offset(0, -dy).pause(0.03)
+    actions.release()
+    actions.perform()
+
+
+def raise_bottom_panel(driver):
+    """Drags the bottom broker panel's resize handle up so the panel's top
+    edge sits at (or above) _PANEL_TARGET_TOP_FRACTION of the viewport,
+    unless it's already there. The panel must already be open (see
+    _ensure_broker_panel_open). Returns:
+      - 'already_high': already at/above the target -- nothing was done
+      - 'raised': dragged, and it reached the target
+      - 'partial': dragged and it moved, but not all the way (TradingView
+        clamps how tall the panel may get)
+      - 'failed': the drag was attempted but the panel didn't move (or
+        couldn't be dragged at all)
+      - 'unavailable': couldn't be measured (panel or handle not in the
+        page) -- nothing was attempted
+    The result is read back by measuring again afterward, never assumed
+    from the drag having run."""
+    before = _measure_bottom_panel(driver)
+    if before is None:
+        return "unavailable"
+    target_top = before["viewport"] * _PANEL_TARGET_TOP_FRACTION
+    if before["top"] - target_top <= _PANEL_TOP_TOLERANCE_PX:
+        return "already_high"
+
+    # It was only just opened, so it may still be animating: wait for the
+    # top edge to hold still before working out how far to drag -- a
+    # distance computed mid-animation would be wrong. Only done when a drag
+    # is actually needed, so the common "already fine" case stays instant.
+    for _ in range(6):
+        humanize.pause(0.3, 0.4)
+        settled = _measure_bottom_panel(driver)
+        if settled is None:
+            return "unavailable"
+        stable = abs(settled["top"] - before["top"]) < 1
+        before = settled
+        if stable:
+            break
+    target_top = before["viewport"] * _PANEL_TARGET_TOP_FRACTION
+    distance = int(round(before["top"] - target_top))
+    if distance <= _PANEL_TOP_TOLERANCE_PX:
+        return "already_high"
+
+    try:
+        handle = driver.find_element(By.CSS_SELECTOR, _PANEL_HANDLE_SELECTOR)
+        _drag_panel_handle_up(driver, handle, distance)
+    except Exception as exc:
+        print(f"  [WARN] Could not drag the broker panel up: {exc!r}")
+        return "failed"
+    humanize.pause(0.4, 0.8)  # let TradingView re-lay-out around the new size
+
+    after = _measure_bottom_panel(driver)
+    if after is None:
+        return "failed"
+    moved = before["top"] - after["top"]
+    summary = (f"top edge {before['top']:.0f}px -> {after['top']:.0f}px "
+               f"(target {target_top:.0f}px, viewport {after['viewport']:.0f}px)")
+    if after["top"] <= target_top + _PANEL_TOP_TOLERANCE_PX:
+        print(f"  Raised the broker panel: {summary} [OK]")
+        return "raised"
+    if moved >= _PANEL_MIN_MOVE_PX:
+        print(f"  [WARN] Raised the broker panel only part of the way: {summary}")
+        return "partial"
+    print(f"  [WARN] Dragging the broker panel up had no effect: {summary}")
+    return "failed"
+
+
+def _maybe_raise_bottom_panel(driver):
+    """Best-effort raise_bottom_panel for the moment the panel has just been
+    confirmed open -- called on every panel use, which is cheap: a panel
+    that's already high enough costs one JS measurement and no drag.
+
+    At most _PANEL_MAX_RAISE_ATTEMPTS drags are made per browser session, so
+    a panel that won't move (or that TradingView keeps resetting) can't turn
+    into an endless drag-on-every-call loop -- a fresh browser session (see
+    the auto-restart relaunch) starts the count over. Never raises: this is
+    a convenience, and must never be the reason opening the panel fails."""
+    try:
+        attempts = _panel_raise_attempts.get(driver, 0)
+        if attempts >= _PANEL_MAX_RAISE_ATTEMPTS:
+            return
+        if raise_bottom_panel(driver) not in ("already_high", "unavailable"):
+            _panel_raise_attempts[driver] = attempts + 1
+    except Exception as exc:
+        print(f"  [WARN] Could not adjust the broker panel's height: {exc!r}")
+
+
 def _ensure_broker_panel_open(driver):
     """Makes sure the bottom broker (Tradovate) panel is expanded.
 
@@ -862,7 +1006,10 @@ def _ensure_broker_panel_open(driver):
     except Exception:
         print("  Broker panel toggle button not found after opening")
         return False
-    return toggle.get_attribute("aria-label") != "Open panel"
+    is_open = toggle.get_attribute("aria-label") != "Open panel"
+    if is_open:
+        _maybe_raise_bottom_panel(driver)
+    return is_open
 
 
 def click_orders_tab(driver, attempts=5):
