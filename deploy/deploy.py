@@ -269,13 +269,29 @@ class Remote:
         )
 
 
-def parse_task_exe(task_xml):
-    """The exe file name a Scheduled Task runs, from `schtasks /query /xml`."""
+def _task_command(task_xml):
+    """The full command path a Scheduled Task runs (backslashes), or None."""
     m = re.search(r"<Command>\s*(.*?)\s*</Command>", task_xml, re.S | re.I)
     if not m:
         return None
-    command = m.group(1).strip().strip('"').replace("/", "\\")
-    return command.rsplit("\\", 1)[-1] or None
+    return m.group(1).strip().strip('"').replace("/", "\\") or None
+
+
+def parse_task_exe(task_xml):
+    """The exe file name a Scheduled Task runs, from `schtasks /query /xml`."""
+    command = _task_command(task_xml)
+    return (command.rsplit("\\", 1)[-1] or None) if command else None
+
+
+def parse_task_dir(task_xml):
+    """The folder the task's exe lives in -- i.e. where this machine's bot is
+    installed, whatever that folder happens to be called (it's named after the
+    release it came from, e.g. tv-signal-trader-v1.1.0, so it differs per
+    machine). None if the task's command isn't an absolute path."""
+    command = _task_command(task_xml)
+    if not command or "\\" not in command:
+        return None
+    return command.rsplit("\\", 1)[0] or None
 
 
 def parse_certutil_hash(text):
@@ -328,8 +344,6 @@ def update_host(target, cfg, files, hashes, dry_run=False,
         return result
 
     remote = Remote(user, host, cfg, runner=runner)
-    install_win = win_path(cfg["remote"]["install_dir"])
-    install_posix = posix_path(cfg["remote"]["install_dir"])
     task = cfg["remote"]["task_name"]
 
     try:
@@ -343,6 +357,13 @@ def update_host(target, cfg, files, hashes, dry_run=False,
         vps_exe = parse_task_exe(r.stdout) if r.returncode == 0 else None
         if not vps_exe:
             return finish("no_task", f"no usable '{task}' task - run deploy/setup_vps.ps1 on this VPS first")
+
+        # The bot's folder is wherever THIS machine's task runs it from; the
+        # configured install_dir is only the fallback if that can't be read.
+        task_dir = parse_task_dir(r.stdout)
+        install_win = win_path(task_dir or cfg["remote"]["install_dir"])
+        install_posix = posix_path(install_win)
+        note(f"install folder: {install_win}" + ("" if task_dir else " (from the config -- not in the task)"))
 
         pushed_names = {REMOTE_FILENAMES[k] for k in files}
         needs_restart = vps_exe.lower() in {n.lower() for n in pushed_names} or "env" in files

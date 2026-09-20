@@ -31,9 +31,13 @@ def _completed(returncode=0, stdout="", stderr=""):
 class FakeVps:
     """Stands in for subprocess.run for ssh/scp against one VPS."""
 
+    DEFAULT_TASK_DIR = "C:\\Users\\Administrator\\Desktop\\tv-signal-trader"
+
     def __init__(self, task_exe="tv-signal-trader.exe", reachable=True, has_task=True, stop_works=True,
-                 scp_ok=True, hash_ok=True, start_works=True, stays_up=True, scp_times_out=False):
+                 scp_ok=True, hash_ok=True, start_works=True, stays_up=True, scp_times_out=False,
+                 task_dir=DEFAULT_TASK_DIR):
         self.task_exe, self.reachable, self.has_task = task_exe, reachable, has_task
+        self.task_dir = task_dir  # None -> the task's command is a bare file name, no folder
         self.stop_works, self.scp_ok, self.hash_ok = stop_works, scp_ok, hash_ok
         self.start_works, self.stays_up, self.scp_times_out = start_works, stays_up, scp_times_out
         self.running = True
@@ -60,7 +64,8 @@ class FakeVps:
         if command.startswith("schtasks /query"):
             if not self.has_task:
                 return _completed(1, stderr="ERROR: The system cannot find the file specified.")
-            return _completed(0, f"<Task><Actions><Exec><Command>C:\\bot\\{self.task_exe}</Command></Exec></Actions></Task>")
+            command = f"{self.task_dir}\\{self.task_exe}" if self.task_dir else self.task_exe
+            return _completed(0, f"<Task><Actions><Exec><Command>{command}</Command></Exec></Actions></Task>")
         if "stop-bot.ps1" in command:
             if not self.stop_works:
                 return _completed(1, stderr="stop-bot.ps1 not found")
@@ -121,6 +126,34 @@ class UpdateHostTests(unittest.TestCase):
     def test_upload_goes_to_a_staging_name_in_the_install_dir(self):
         vps = FakeVps()
         self._run(vps, ["admin_exe"])
+        scp_call = next(c for c in vps.calls if c[0] == "scp")
+        self.assertEqual(scp_call[2], "Administrator@1.2.3.4:C:/Users/Administrator/Desktop/tv-signal-trader/tv-signal-trader.exe.new")
+
+    # --- the install folder comes from the machine's own task ---
+
+    def test_a_versioned_install_folder_is_used_for_stop_upload_and_move(self):
+        folder = "C:\\Users\\Administrator\\Desktop\\tv-signal-trader-v1.1.0"
+        vps = FakeVps(task_dir=folder)
+        result = self._run(vps, ["admin_exe"])
+        self.assertEqual(result.status, "ok", result.detail)
+        scp_call = next(c for c in vps.calls if c[0] == "scp")
+        self.assertEqual(scp_call[2], "Administrator@1.2.3.4:" + folder.replace("\\", "/") + "/tv-signal-trader.exe.new")
+        stop = next(c for c in vps.ssh_commands() if "stop-bot.ps1" in c)
+        self.assertIn(f'"{folder}\\stop-bot.ps1"', stop)
+        move = next(c for c in vps.ssh_commands() if c.startswith("move /Y"))
+        self.assertIn(f'"{folder}\\tv-signal-trader.exe"', move)
+        self.assertNotIn("Desktop\\tv-signal-trader\\", " ".join(vps.ssh_commands()))
+
+    def test_machines_with_different_folder_names_each_use_their_own(self):
+        for folder in ("C:\\bots\\tv-signal-trader-v1.0.0", "D:\\tv-signal-trader-v1.1.0"):
+            vps = FakeVps(task_dir=folder)
+            self.assertEqual(self._run(vps, ["admin_exe"]).status, "ok")
+            scp_call = next(c for c in vps.calls if c[0] == "scp")
+            self.assertIn(folder.replace("\\", "/"), scp_call[2])
+
+    def test_the_configured_install_dir_is_the_fallback_when_the_task_has_no_folder(self):
+        vps = FakeVps(task_dir=None)  # <Command>tv-signal-trader.exe</Command>
+        self.assertEqual(self._run(vps, ["admin_exe"]).status, "ok")
         scp_call = next(c for c in vps.calls if c[0] == "scp")
         self.assertEqual(scp_call[2], "Administrator@1.2.3.4:C:/Users/Administrator/Desktop/tv-signal-trader/tv-signal-trader.exe.new")
 
@@ -240,6 +273,17 @@ class ParsingTests(unittest.TestCase):
 
     def test_task_exe_is_none_when_there_is_no_command(self):
         self.assertIsNone(deploy.parse_task_exe("<Task/>"))
+
+    def test_task_dir_is_the_folder_of_the_task_exe_whatever_it_is_called(self):
+        xml = "<Command>C:\\Users\\Administrator\\Desktop\\tv-signal-trader-v1.1.0\\tv-signal-trader.exe</Command>"
+        self.assertEqual(deploy.parse_task_dir(xml), "C:\\Users\\Administrator\\Desktop\\tv-signal-trader-v1.1.0")
+
+    def test_task_dir_tolerates_quotes_and_forward_slashes(self):
+        self.assertEqual(deploy.parse_task_dir('<Command>"C:/bot v2/tv-signal-trader-user.exe"</Command>'), "C:\\bot v2")
+
+    def test_task_dir_is_none_for_a_bare_file_name_or_no_command(self):
+        self.assertIsNone(deploy.parse_task_dir("<Command>tv-signal-trader.exe</Command>"))
+        self.assertIsNone(deploy.parse_task_dir("<Task/>"))
 
     def test_certutil_hash_is_found_with_or_without_spaces(self):
         digest = "ab" * 32

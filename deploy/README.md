@@ -10,7 +10,13 @@ Run `setup_vps.ps1` on the VPS (over RDP, from an elevated PowerShell):
     powershell -ExecutionPolicy Bypass -File .\setup_vps.ps1
 
 It enables OpenSSH, installs the deploy public key, writes `stop-bot.ps1`, and
-registers the `TVSignalTrader` Scheduled Task. Afterwards start the bot with
+registers the `TVSignalTrader` Scheduled Task. The bot's folder can be named
+anything that starts with `tv-signal-trader` (e.g. `tv-signal-trader-v1.1.0`):
+the script looks for it on the Desktop (`$InstallRoot` / `$InstallPrefix` at the
+top of the script) and picks the one folder holding the exe. If there is more
+than one such folder it stops and asks you to set `$InstallDir` explicitly.
+After moving the bot to a new folder, run the script again -- it repoints the
+task. Afterwards start the bot with
 `Start-ScheduledTask -TaskName TVSignalTrader`, not by hand, and close RDP with
 the window's X rather than "Sign out" (the task needs a logged-in session).
 
@@ -37,6 +43,10 @@ includes pre-releases). A release asset can be a loose file or a file inside the
 release's zip.
 
 ### What it does to each machine
+
+`deploy.py` finds each machine's bot folder from that machine's own Scheduled
+Task, so folder names can differ per VPS. `remote.install_dir` in the config is
+only a fallback for a task whose command has no folder in it.
 
 The bot is restarted only when it has to be: when the exe **that machine's task
 runs** is being replaced, or `.env` is (config is read once at startup). Pushing

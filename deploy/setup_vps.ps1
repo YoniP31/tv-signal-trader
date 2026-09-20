@@ -31,7 +31,9 @@ $ErrorActionPreference = "Stop"
 
 # ---- Configuration -- edit per VPS if it differs ---------------------------
 $DeployPublicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKwFpScyGoeSJQTkE4TFkTFVbMFu+c5Eo2HSAtOvnf+s yonip@DESKTOP-TQ7MA4L"
-$InstallDir      = "C:\Users\Administrator\Desktop\tv-signal-trader"
+$InstallRoot     = "C:\Users\Administrator\Desktop"   # where the bot's folder lives
+$InstallPrefix   = "tv-signal-trader"                 # the folder's name STARTS with this, e.g. tv-signal-trader-v1.1.0
+$InstallDir      = ""                                 # normally leave empty; set an exact folder to skip the search
 $ExeName         = "tv-signal-trader.exe"     # or tv-signal-trader-user.exe
 $StartCommand    = "web_multi"                # or "web" -- whichever you normally type at the '>' prompt
 $TaskName        = "TVSignalTrader"
@@ -41,6 +43,24 @@ $RunAsUser       = "$env:COMPUTERNAME\Administrator"
 function Write-Step($msg)  { Write-Host "==> $msg" -ForegroundColor Cyan }
 function Write-Ok($msg)    { Write-Host "    OK: $msg" -ForegroundColor Green }
 function Write-Warn2($msg) { Write-Host "    WARN: $msg" -ForegroundColor Yellow }
+
+# The folder is named after the release it came from (tv-signal-trader-v1.1.0,
+# ...), so it is found by prefix instead of by an exact path: the one folder
+# under $Root whose name starts with $Prefix and that actually holds $Exe.
+# Refuses to guess between several.
+function Resolve-InstallDir($Root, $Prefix, $Exe) {
+    if (-not (Test-Path $Root)) { throw "Install root not found: $Root (fix `$InstallRoot at the top of this script)." }
+    $found = @(Get-ChildItem -Path $Root -Directory -Filter "$Prefix*" |
+        Where-Object { Test-Path (Join-Path $_.FullName $Exe) })
+    if ($found.Count -eq 0) {
+        throw "No folder starting with '$Prefix' that contains $Exe was found in $Root (fix `$InstallRoot / `$ExeName, or set `$InstallDir, at the top of this script)."
+    }
+    if ($found.Count -gt 1) {
+        $names = ($found | ForEach-Object { $_.FullName }) -join "`n  "
+        throw "More than one folder starting with '$Prefix' contains ${Exe}:`n  $names`nSet `$InstallDir at the top of this script to the one to use (or remove the old one)."
+    }
+    return $found[0].FullName
+}
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) { throw "Run this from an elevated PowerShell (right-click -> Run as administrator)." }
@@ -88,7 +108,12 @@ Write-Ok "permissions locked to SYSTEM + Administrators"
 
 # 4. stop-bot.ps1 --------------------------------------------------------------
 Write-Step "stop-bot.ps1"
-if (-not (Test-Path $InstallDir)) { throw "Install directory not found: $InstallDir (fix `$InstallDir at the top of this script)." }
+if ($InstallDir) {
+    if (-not (Test-Path $InstallDir)) { throw "Install directory not found: $InstallDir (fix `$InstallDir at the top of this script)." }
+} else {
+    $InstallDir = Resolve-InstallDir $InstallRoot $InstallPrefix $ExeName
+    Write-Ok "found the install folder: $InstallDir"
+}
 $stopScriptPath = Join-Path $InstallDir "stop-bot.ps1"
 $stopScript = @'
 # Force-stops the bot, its chromedriver, and every Chrome process tied to its
