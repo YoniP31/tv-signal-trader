@@ -1,0 +1,54 @@
+# Deploying updates to VPS machines
+
+`deploy.py` pushes new bot files to many Windows VPS over SSH from your own
+machine, stopping and restarting the bot on each one.
+
+## One-time, per VPS
+
+Run `setup_vps.ps1` on the VPS (over RDP, from an elevated PowerShell):
+
+    powershell -ExecutionPolicy Bypass -File .\setup_vps.ps1
+
+It enables OpenSSH, installs the deploy public key, writes `stop-bot.ps1`, and
+registers the `TVSignalTrader` Scheduled Task. Afterwards start the bot with
+`Start-ScheduledTask -TaskName TVSignalTrader`, not by hand, and close RDP with
+the window's X rather than "Sign out" (the task needs a logged-in session).
+
+The task deliberately runs **non-elevated**: Chrome exits immediately
+("session not created: Chrome instance exited") when the bot is launched
+elevated.
+
+## Each update
+
+    cp deploy/deploy_config.example.json deploy/deploy_config.json   # once
+    cp deploy/vps_list.example.txt       deploy/vps_list.txt         # once, then list your fleet
+
+    python deploy/deploy.py --dry-run          # checks every machine, changes nothing
+    python deploy/deploy.py                    # the real run (asks you to type "yes")
+    python deploy/deploy.py --host 1.2.3.4     # just one machine, ignoring the roster
+    python deploy/deploy.py --push admin_exe,user_exe   # override which files this run pushes
+    python deploy/deploy.py -v                 # print every step as it happens
+
+Each file in `deploy_config.json` has a `push` flag (admin_exe, user_exe, env,
+accounts) and a source: `"from": "local"` with a `path` (relative paths are from
+the repo root, e.g. a fresh `dist/` build), or `"from": "release"` with an
+`asset` name, taken from the GitHub release named by `release.tag` (`"latest"`
+includes pre-releases). A release asset can be a loose file or a file inside the
+release's zip.
+
+### What it does to each machine
+
+The bot is restarted only when it has to be: when the exe **that machine's task
+runs** is being replaced, or `.env` is (config is read once at startup). Pushing
+only the other variant's exe, or `accounts_to_add.txt`, never interrupts trading.
+
+Every file is uploaded to `<name>.new`, its SHA-256 is verified on the VPS, and
+only then moved into place. If a copy fails after the bot was stopped, the bot
+is started again on its previous files rather than left down. An existing `.env`
+is copied to `.env.bak` before being replaced, and replacing `.env` needs an
+extra warning and a typed "yes" -- it holds each machine's real credentials, so
+`push` stays `false` for it in normal use.
+
+Result per machine: `ok`, `ok_no_restart`, `unreachable`, `no_task` (run
+`setup_vps.ps1` there), `stop_failed`, `copy_failed`, `restart_failed`,
+`verify_failed`. A JSON report of every run is written to `deploy/reports/`.

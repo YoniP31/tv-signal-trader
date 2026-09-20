@@ -1,0 +1,17 @@
+{
+  "targets_file": "deploy/vps_list.txt",
+  "ssh": { "user": "Administrator", "key": "~/.ssh/tv_deploy_key" },
+  "remote": {
+    "install_dir": "C:/Users/Administrator/Desktop/tv-signal-trader",
+    "task_name": "TVSignalTrader"
+  },
+  "release": { "repo": "YoniP31/tv-signal-trader", "tag": "latest" },
+  "files": {
+    "admin_exe": { "push": true,  "from": "local",   "path": "dist/tv-signal-trader.exe" },
+    "user_exe":  { "push": false, "from": "local",   "path": "dist/tv-signal-trader-user.exe" },
+    "env":       { "push": false, "from": "release", "asset": ".env" },
+    "accounts":  { "push": false, "from": "release", "asset": "accounts_to_add.txt" }
+  },
+  "max_parallel": 5,
+  "verify_seconds": 25
+}

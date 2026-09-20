@@ -43,3 +43,10 @@ accounts_to_add.txt
 # OS cruft
 .DS_Store
 Thumbs.db
+
+# Remote-deployment tooling (deploy/): your real fleet roster and config are
+# operational data, and the download cache / run reports are regenerated.
+/deploy/deploy_config.json
+/deploy/vps_list.txt
+/deploy/_cache/
+/deploy/reports/
