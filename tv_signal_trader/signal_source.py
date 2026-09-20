@@ -183,17 +183,29 @@ def detect_second_withdrawals(driver, tv_tab, connected_company):
     *before* this session's own _record_daily_equity -- both need
     status.get_equity_history to still reflect the *previous* day's
     equity, not today's (which _record_daily_equity only writes at session
-    end). Not yet wired into the main trading loop or into any action --
-    this only detects and reports (no tg.add_portfolio, no
-    #secondWithdrawalBtn click, no status.json writes at all); see
-    test_commands' second_withdrawal_dry_run in cli.py for a way to run
-    this on demand.
+    end). Read-only in itself either way (no tg.add_portfolio, no
+    #secondWithdrawalBtn click, no status.json writes at all) -- see
+    act_on_second_withdrawals for the real action built on top of this,
+    and test_commands' second_withdrawal_dry_run in cli.py for a way to
+    run just this detection pass on demand.
+
+    A no-op entirely -- prints one line and returns immediately, no
+    Tradovate/TradingGenerator interaction at all -- while
+    config.SECOND_WITHDRAWAL_ENABLED is False (disabled for this version
+    at the user's request; see that constant's own comment). Checked
+    here rather than only in act_on_second_withdrawals, since this is
+    also reachable standalone via second_withdrawal_dry_run.
 
     Returns (detected, connected_company) -- `detected` is a list of dicts
     (company, account, current_balance, last_recorded_equity,
     today_total_pl), one per account flagged this pass; connected_company
     follows the same convention as every other per-company sweep here.
     """
+    if not config.SECOND_WITHDRAWAL_ENABLED:
+        print("\n[WITHDRAWAL] Second Withdrawal is disabled (config.SECOND_WITHDRAWAL_ENABLED "
+              "is False) - skipping.")
+        return [], connected_company
+
     print("\n[WITHDRAWAL] Checking LIVE accounts for undetected withdrawals...")
     detected = []
     accounts_by_company = {}

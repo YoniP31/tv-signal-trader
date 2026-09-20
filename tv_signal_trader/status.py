@@ -133,6 +133,22 @@ def mark_portfolio_removed(company, portfolio, reason):
     update_portfolio(company, portfolio, active=False, removed_at=_now(), removed_reason=reason)
 
 
+def mark_portfolio_withdrawal_submitted(company, portfolio):
+    """Once Flip Mode's rules qualify an account for removal, this
+    version submits it for withdrawal via TradingGenerator's
+    #withdrawalBtn instead of actually removing the portfolio (see the
+    Flip Mode plan) -- the portfolio stays in TG, `active` is untouched
+    (unlike mark_portfolio_removed), and it must never be traded again.
+
+    Purely a durable record for visibility/audit here, not the source of
+    truth the bot itself trades on -- that's tradinggenerator.
+    is_withdrawal_submitted, re-read live from the button on every
+    evaluation, so a human manually clearing it back (the only way this
+    ever un-submits, per the Flip Mode plan) takes effect on the bot's
+    very next check with no status.json update needed at all."""
+    update_portfolio(company, portfolio, withdrawal_submitted_at=_now())
+
+
 def mark_portfolio_unavailable(company, portfolio, reason):
     update_portfolio(company, portfolio, unavailable_reason=reason, unavailable_since=_now())
 

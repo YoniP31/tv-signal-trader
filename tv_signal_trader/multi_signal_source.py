@@ -245,7 +245,7 @@ def _refresh_open_positions(driver, web_tab, tv_tab, open_positions, connected_c
                 sl_ticks=position['sl_ticks'], tp_ticks=position['tp_ticks'], result=outcome,
             )
             _act_on_flip_mode_decision(driver, company, portfolio, decision)
-            if decision not in ('blown', 'qualifies_for_removal') and daily_limit_reason:
+            if decision not in ('blown', 'qualifies_for_removal', 'withdrawal_submitted') and daily_limit_reason:
                 limit_kind = 'profit' if daily_limit_reason == 'daily_profit_limit_reached' else 'loss'
                 print(f"  [WARN] '{company} / {portfolio}' hit its daily {limit_kind} limit - "
                       "quarantining until the next session.")
@@ -519,8 +519,8 @@ def _print_flip_mode_decision(company, portfolio, decision, new_target, details)
     against their thresholds, and the decision reached -- so a console
     watching the live loop shows *why*, not just the isolated
     '#flipModeBtn label: ...' read that used to be the only visible trace
-    of any of this happening. Never called for 'blown' (see
-    evaluate_account_for_removal): that decision never reaches
+    of any of this happening. Never called for 'blown'/'withdrawal_submitted'
+    (see evaluate_account_for_removal): neither decision ever reaches
     flip_mode.evaluate() at all, so there's nothing here to narrate.
     """
     balance = details['current_balance']
@@ -626,7 +626,9 @@ def evaluate_account_for_removal(driver, web_tab, tv_tab, company, portfolio, co
     returned decision is left to them, via _act_on_flip_mode_decision.
 
     Returns (decision, balance, tp_cap_threshold, connected_company):
-      - decision: 'blown', 'qualifies_for_removal', 'enter_flip_mode',
+      - decision: 'blown', 'qualifies_for_removal', 'withdrawal_submitted'
+        (already submitted for withdrawal on an earlier cycle -- see
+        below -- so nothing else here was even checked), 'enter_flip_mode',
         'exit_flip_mode', 'keep_flip_mode', 'keep_normal', or 'failed'
         (couldn't gather what's needed to evaluate at all -- see the
         logged warning for why).
@@ -634,8 +636,8 @@ def evaluate_account_for_removal(driver, web_tab, tv_tab, company, portfolio, co
       - tp_cap_threshold: the current profit-goal ceiling for
         take-profit capping -- the higher of running_equity_target and
         the tier final (see _gather_flip_mode_inputs). None for
-        'blown'/'failed', since neither is ever going to place a trade
-        that would need it.
+        'blown'/'withdrawal_submitted'/'failed', since none of those is
+        ever going to place a trade that would need it.
     """
     balance_info, connected_company = _read_balance_and_tier(
         driver, tv_tab, company, portfolio, connected_company
@@ -651,6 +653,27 @@ def evaluate_account_for_removal(driver, web_tab, tv_tab, company, portfolio, co
                   "will retry next cycle.")
             return 'failed', balance, None, connected_company
         return 'blown', balance, None, connected_company
+
+    # Checked before anything Flip-Mode-related: once #withdrawalBtn is
+    # submitted (see _act_on_flip_mode_decision's 'qualifies_for_removal'
+    # branch), the account must never trade again, and Flip Mode's own
+    # state no longer means anything for it -- re-read live every cycle
+    # (never cached/persisted as the source of truth, see
+    # tg.is_withdrawal_submitted's own docstring) so a human manually
+    # clearing it back in TradingGenerator takes effect on the very next
+    # check with nothing else needed from this bot.
+    driver.switch_to.window(web_tab)
+    if not _select_and_verify(driver, company, portfolio):
+        print(f"  [WARN] Could not safely select '{company} / {portfolio}' to check whether its "
+              "withdrawal is submitted - will retry next cycle.")
+        return 'failed', balance, None, connected_company
+    submitted = tg.is_withdrawal_submitted(driver)
+    if submitted is None:
+        print(f"  [WARN] Could not read '{company} / {portfolio}''s withdrawal-submitted state - "
+              "will retry next cycle.")
+        return 'failed', balance, None, connected_company
+    if submitted:
+        return 'withdrawal_submitted', balance, None, connected_company
 
     inputs, connected_company = _gather_flip_mode_inputs(
         driver, web_tab, tv_tab, company, portfolio, connected_company, balance_info=balance_info
@@ -678,8 +701,9 @@ def evaluate_account_for_removal(driver, web_tab, tv_tab, company, portfolio, co
 def _act_on_flip_mode_decision(driver, company, portfolio, decision):
     """Performs whichever live-page action `decision` (from
     evaluate_account_for_removal) calls for -- remove_portfolio for
-    'blown'/'qualifies_for_removal', enable_flip_mode/disable_flip_mode
-    for 'enter_flip_mode'/'exit_flip_mode'. A no-op (returns True) for
+    'blown', submit_withdrawal for 'qualifies_for_removal',
+    enable_flip_mode/disable_flip_mode for 'enter_flip_mode'/
+    'exit_flip_mode'. A no-op (returns True) for 'withdrawal_submitted'/
     'keep_flip_mode'/'keep_normal'/anything else.
 
     Assumes the driver is already on TradingGenerator's tab with
@@ -687,9 +711,9 @@ def _act_on_flip_mode_decision(driver, company, portfolio, decision):
     evaluate_account_for_removal returns, which is the only place this is
     called from.
 
-    Returns True unless a required Flip Mode click failed (remove_portfolio
-    itself doesn't report success/failure the same way, so 'blown'/
-    'qualifies_for_removal' always return True here)."""
+    Returns True unless a required Flip Mode click failed (remove_portfolio/
+    submit_withdrawal don't report success/failure the same way, so
+    'blown'/'qualifies_for_removal' always return True here)."""
     if decision == 'blown':
         print(f"  [WARN] '{company} / {portfolio}' balance is at/below its tier's minimum - "
               "removing (blown).")
@@ -697,10 +721,20 @@ def _act_on_flip_mode_decision(driver, company, portfolio, decision):
         status.mark_portfolio_removed(company, portfolio, 'balance outside allowed range (blown)')
         return True
     if decision == 'qualifies_for_removal':
-        print(f"  '{company} / {portfolio}' qualifies for removal under Flip Mode's rules - removing.")
-        tg.remove_portfolio(driver, portfolio)
-        status.mark_portfolio_removed(company, portfolio, 'hit Flip Mode profit target')
+        # This version submits the account for withdrawal instead of
+        # removing its portfolio outright (see the Flip Mode plan) -- the
+        # portfolio stays in TradingGenerator, but evaluate_account_for_
+        # removal's own withdrawal-submitted check (run before any of
+        # this on every future cycle) means it will never trade again
+        # from here on, until a human clears #withdrawalBtn back
+        # themselves -- this bot never does.
+        print(f"  '{company} / {portfolio}' qualifies for removal under Flip Mode's rules - "
+              "submitting for withdrawal.")
+        tg.submit_withdrawal(driver, config.read_admin_code())
+        status.mark_portfolio_withdrawal_submitted(company, portfolio)
         return True
+    if decision == 'withdrawal_submitted':
+        return True  # already submitted on an earlier cycle -- nothing to click again
     if decision == 'enter_flip_mode':
         return tg.enable_flip_mode(driver, config.read_admin_code())
     if decision == 'exit_flip_mode':
@@ -714,8 +748,9 @@ def _open_position(driver, web_tab, tv_tab, params, connected_company):
     (already known to be eligible -- see check_eligibility).
 
     Deliberately does *not* report Not Taken to TradingGenerator on failure,
-    nor act on a 'blown'/'qualifies_for_removal' decision by actually
-    removing the portfolio -- each portfolio has its own independent
+    nor act on a 'blown'/'qualifies_for_removal'/'withdrawal_submitted'
+    decision itself (removing the portfolio, submitting it for
+    withdrawal) -- each portfolio has its own independent
     "Trade Result" field (even within a multi-portfolio signal, see
     read_eval_portfolios), so the caller reports Not Taken itself, on the
     specific portfolio that failed, rather than this function guessing at
@@ -735,12 +770,12 @@ def _open_position(driver, web_tab, tv_tab, params, connected_company):
         / 'daily_loss_limit_reached' (the account already hit
         config.DAILY_PROFIT_LIMIT/DAILY_LOSS_LIMIT -- also quarantine until
         the next session, no trade attempted), 'blown' / 'qualifies_for_removal'
-        (the account needs removing under the same rules
-        evaluate_account_for_removal/_act_on_flip_mode_decision use
-        elsewhere -- the caller must report Not Taken *then* call
-        _act_on_flip_mode_decision itself with this outcome), or 'failed'
-        (some other failure, no quarantine implied). ledger_entry is None
-        unless outcome is 'opened'.
+        / 'withdrawal_submitted' (this account must not be traded, under
+        the same rules evaluate_account_for_removal/
+        _act_on_flip_mode_decision use elsewhere -- the caller must report
+        Not Taken *then* call _act_on_flip_mode_decision itself with this
+        outcome), or 'failed' (some other failure, no quarantine implied).
+        ledger_entry is None unless outcome is 'opened'.
     """
     company = params['company']
     portfolio = params['portfolio']
@@ -765,10 +800,14 @@ def _open_position(driver, web_tab, tv_tab, params, connected_company):
         return 'failed', connected_company, None
     status.update_portfolio(company, portfolio, balance=balance)
 
-    if decision in ('blown', 'qualifies_for_removal'):
-        print(f"  [WARN] '{company} / {portfolio}' needs removing "
-              f"({'balance outside its allowed range' if decision == 'blown' else 'hit its Flip Mode profit target'}) "
-              "instead of trading -- reporting Not Taken first, then removing.")
+    if decision in ('blown', 'qualifies_for_removal', 'withdrawal_submitted'):
+        reasons = {
+            'blown': 'balance outside its allowed range',
+            'qualifies_for_removal': 'hit its Flip Mode profit target',
+            'withdrawal_submitted': 'already submitted for withdrawal',
+        }
+        print(f"  [WARN] '{company} / {portfolio}' cannot be traded ({reasons[decision]}) - "
+              "reporting Not Taken first.")
         return decision, connected_company, None
 
     _act_on_flip_mode_decision(driver, company, portfolio, decision)
@@ -1412,11 +1451,12 @@ def run_web_loop_multi(driver, max_positions_per_company=None, command_name="web
                               f"(daily {limit_kind} limit reached).")
                         quarantined.add((company, portfolio))
                         status.mark_portfolio_unavailable(company, portfolio, open_outcome)
-                    elif open_outcome in ('blown', 'qualifies_for_removal'):
+                    elif open_outcome in ('blown', 'qualifies_for_removal', 'withdrawal_submitted'):
                         # Reported first, below (same as every other
-                        # non-'opened' outcome) -- removal itself only
-                        # happens after that, see _open_position's own
-                        # docstring for why the order matters here.
+                        # non-'opened' outcome) -- removal/submission
+                        # itself only happens after that, see
+                        # _open_position's own docstring for why the
+                        # order matters here.
                         removal_decision = open_outcome
                     else:
                         print(f"  [FAIL] Could not open '{company} / {portfolio}'.")

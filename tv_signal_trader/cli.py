@@ -159,6 +159,15 @@ def _run_test_menu(driver, tv_tab, hide_tg_window=None, relaunch_browser=None):
         _tg_tab()
         tg.disable_flip_mode(driver, config.read_admin_code())
 
+    def _test_withdrawal_status():
+        _tg_tab()
+        submitted = tg.is_withdrawal_submitted(driver)
+        print(f"  is_withdrawal_submitted() -> {submitted}")
+
+    def _test_submit_withdrawal():
+        _tg_tab()
+        tg.submit_withdrawal(driver, config.read_admin_code())
+
     def _test_second_withdrawal_status():
         _tg_tab()
         marked = tg.is_second_withdrawal_marked(driver)
@@ -289,6 +298,24 @@ def _run_test_menu(driver, tv_tab, hide_tg_window=None, relaunch_browser=None):
         "disable_flip_mode": (
             "Same as enable_flip_mode, in reverse -- no-ops if it already reads as disabled.",
             _test_disable_flip_mode,
+        ),
+        "withdrawal_status": (
+            "Read-only -- in TradingGenerator, select the company/portfolio you want to check "
+            "first. Prints #withdrawalBtn's raw label and the submitted/not-submitted reading "
+            "tg.is_withdrawal_submitted() derives from it -- confirmed live both ways ('💰 Submit "
+            "Withdrawal' not submitted, '✓ Withdrawal Submitted — click to release' submitted).",
+            _test_withdrawal_status,
+        ),
+        "submit_withdrawal": (
+            "In TradingGenerator, select the company/portfolio you want to test first. Requires "
+            "TRADINGGENERATOR_ADMIN_CODE set in .env. Clicks '💰 Submit Withdrawal' and enters the "
+            "admin code into the native browser prompt that appears -- no-ops if it already reads "
+            "as submitted, refuses to click at all if its state can't be read (a single toggle "
+            "button, same as Flip Mode/Second Withdrawal -- clicking it while already submitted "
+            "releases it right back). This bot never releases one itself on purpose: there is no "
+            "release_withdrawal command here at all -- only a person clears this back, directly "
+            "in TradingGenerator.",
+            _test_submit_withdrawal,
         ),
         "second_withdrawal_status": (
             "Read-only -- in TradingGenerator, select the company/portfolio you want to check "

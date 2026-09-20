@@ -953,3 +953,80 @@ def mark_second_withdrawal(driver, password):
         return False
     print("  Marked as second withdrawal [OK]")
     return True
+
+
+def is_withdrawal_submitted(driver):
+    """Reads #withdrawalBtn's current label to tell whether the currently
+    selected portfolio has already been submitted for withdrawal (see the
+    Flip Mode plan: this version submits an account for withdrawal
+    instead of removing its TradingGenerator portfolio once it qualifies
+    for removal; a submitted account must never be traded again).
+
+    Confirmed live: reads "💰 Submit Withdrawal" when not submitted, "✓
+    Withdrawal Submitted — click to release" once submitted -- a genuine
+    single toggle button, same mechanics as #flipModeBtn/
+    #secondWithdrawalBtn (its label literally says "click to release":
+    clicking it again while already submitted would release it right
+    back, exactly the bug already caught live for #secondWithdrawalBtn --
+    see submit_withdrawal's own no-op guard, which exists for that reason
+    even though the *intended* usage is that only a human ever releases
+    it, never this bot).
+
+    Always prints the raw label read. Returns None if the button can't be
+    found, or its label matches neither confirmed wording -- callers must
+    treat None as "unknown", never as "not submitted" (same reasoning as
+    every other button here)."""
+    try:
+        btn = driver.find_element(By.ID, "withdrawalBtn")
+    except Exception:
+        print("  [WARN] #withdrawalBtn not found.")
+        return None
+    label = btn.text.strip()
+    print(f"  #withdrawalBtn label: '{label}'")
+    lowered = label.lower()
+    if "click to release" in lowered:
+        return True
+    if "submit withdrawal" in lowered:
+        return False
+    print("  [WARN] #withdrawalBtn's label doesn't match either known wording - can't tell its state.")
+    return None
+
+
+def submit_withdrawal(driver, password):
+    """Clicks #withdrawalBtn and enters `password` into the native
+    admin-code prompt it triggers (confirmed live, same mechanism as
+    #flipModeBtn/#secondWithdrawalBtn), submitting the currently selected
+    portfolio for withdrawal.
+
+    The *intended* usage is one-directional -- only a human ever releases
+    a submitted withdrawal, directly in TradingGenerator; there is
+    deliberately no release_withdrawal function here at all. But the
+    button itself doesn't enforce that (see is_withdrawal_submitted's own
+    docstring: it's a real toggle, and re-clicking it while already
+    submitted releases it right back), so this still no-ops (returns True
+    without clicking) if it already reads as submitted, and refuses to
+    click at all (returns False) if the current state can't be read --
+    same reasoning as every other button here."""
+    current = is_withdrawal_submitted(driver)
+    if current is None:
+        print("  [FAIL] Can't tell whether withdrawal is already submitted - refusing to click "
+              "#withdrawalBtn rather than risk releasing it if it's already submitted. See the "
+              "label logged above.")
+        return False
+    if current:
+        print("  Already submitted for withdrawal - nothing to do.")
+        return True
+    try:
+        btn = driver.find_element(By.ID, "withdrawalBtn")
+    except Exception:
+        print("  [FAIL] #withdrawalBtn not found.")
+        return False
+    btn.click()
+    if not _send_admin_code_to_prompt(driver, password):
+        print("  [FAIL] No admin-code prompt appeared after clicking #withdrawalBtn.")
+        return False
+    if not is_withdrawal_submitted(driver):
+        print("  [FAIL] Doesn't show as submitted for withdrawal after submitting it.")
+        return False
+    print("  Withdrawal submitted [OK]")
+    return True

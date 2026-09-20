@@ -382,6 +382,8 @@ class EvaluateAccountForRemovalTests(unittest.TestCase):
         }
         with patch.object(ms, "_read_balance_and_tier",
                            return_value=(balance_info, "Apex Trader Funding")), \
+             patch.object(ms, "_select_and_verify", return_value=True), \
+             patch.object(ms.tg, "is_withdrawal_submitted", return_value=False), \
              patch.object(ms, "_gather_flip_mode_inputs",
                            return_value=(gathered, "Apex Trader Funding")) as gather_mock, \
              patch.object(ms.status, "set_running_equity_target") as set_target_mock:
@@ -400,6 +402,52 @@ class EvaluateAccountForRemovalTests(unittest.TestCase):
             "Apex Trader Funding", balance_info=balance_info
         )
 
+    def test_an_already_submitted_withdrawal_short_circuits_before_flip_mode_runs_at_all(self):
+        # Once #withdrawalBtn is submitted, Flip Mode's own state no
+        # longer means anything for this account -- flip_mode.evaluate()
+        # must never even run.
+        balance_info = {'current_balance': 54000.0, 'tier_size': 50000, 'tier': {'min': 47500.0}}
+        with patch.object(ms, "_read_balance_and_tier",
+                           return_value=(balance_info, "Apex Trader Funding")), \
+             patch.object(ms, "_select_and_verify", return_value=True), \
+             patch.object(ms.tg, "is_withdrawal_submitted", return_value=True), \
+             patch.object(ms, "_gather_flip_mode_inputs") as gather_mock, \
+             patch.object(ms.flip_mode, "evaluate") as evaluate_mock:
+            decision, balance, tp_cap, connected_company = ms.evaluate_account_for_removal(
+                self.driver, self.web_tab, self.tv_tab, "Apex Trader Funding", "PAAPEX0001", None
+            )
+        self.assertEqual(decision, 'withdrawal_submitted')
+        self.assertEqual(balance, 54000.0)
+        self.assertIsNone(tp_cap)
+        self.assertEqual(connected_company, "Apex Trader Funding")
+        gather_mock.assert_not_called()
+        evaluate_mock.assert_not_called()
+
+    def test_returns_failed_if_the_portfolio_cannot_be_selected_to_check_withdrawal_state(self):
+        balance_info = {'current_balance': 54000.0, 'tier_size': 50000, 'tier': {'min': 47500.0}}
+        with patch.object(ms, "_read_balance_and_tier",
+                           return_value=(balance_info, "Apex Trader Funding")), \
+             patch.object(ms, "_select_and_verify", return_value=False):
+            decision, balance, tp_cap, connected_company = ms.evaluate_account_for_removal(
+                self.driver, self.web_tab, self.tv_tab, "Apex Trader Funding", "PAAPEX0001", None
+            )
+        self.assertEqual(decision, 'failed')
+        self.assertEqual(balance, 54000.0)
+
+    def test_returns_failed_when_withdrawal_submitted_state_cannot_be_read(self):
+        balance_info = {'current_balance': 54000.0, 'tier_size': 50000, 'tier': {'min': 47500.0}}
+        with patch.object(ms, "_read_balance_and_tier",
+                           return_value=(balance_info, "Apex Trader Funding")), \
+             patch.object(ms, "_select_and_verify", return_value=True), \
+             patch.object(ms.tg, "is_withdrawal_submitted", return_value=None), \
+             patch.object(ms, "_gather_flip_mode_inputs") as gather_mock:
+            decision, balance, tp_cap, connected_company = ms.evaluate_account_for_removal(
+                self.driver, self.web_tab, self.tv_tab, "Apex Trader Funding", "PAAPEX0001", None
+            )
+        self.assertEqual(decision, 'failed')
+        self.assertEqual(balance, 54000.0)
+        gather_mock.assert_not_called()
+
 
 class ActOnFlipModeDecisionTests(unittest.TestCase):
     def setUp(self):
@@ -415,16 +463,32 @@ class ActOnFlipModeDecisionTests(unittest.TestCase):
         mark_mock.assert_called_once()
         self.assertIn("blown", mark_mock.call_args.args[2])
 
-    def test_qualifies_for_removal_removes_the_portfolio_and_marks_it_removed(self):
-        with patch.object(ms.tg, "remove_portfolio") as remove_mock, \
-             patch.object(ms.status, "mark_portfolio_removed") as mark_mock:
+    def test_qualifies_for_removal_submits_withdrawal_instead_of_removing(self):
+        # This version submits the account for withdrawal via
+        # #withdrawalBtn instead of removing its TradingGenerator
+        # portfolio outright -- see the Flip Mode plan.
+        with patch.object(ms.tg, "submit_withdrawal", return_value=True) as submit_mock, \
+             patch.object(ms.tg, "remove_portfolio") as remove_mock, \
+             patch.object(ms.status, "mark_portfolio_withdrawal_submitted") as mark_mock, \
+             patch.object(ms.config, "read_admin_code", return_value="the-code"):
             result = ms._act_on_flip_mode_decision(
                 self.driver, self.company, self.portfolio, 'qualifies_for_removal'
             )
         self.assertTrue(result)
-        remove_mock.assert_called_once_with(self.driver, self.portfolio)
-        mark_mock.assert_called_once()
-        self.assertIn("Flip Mode", mark_mock.call_args.args[2])
+        submit_mock.assert_called_once_with(self.driver, "the-code")
+        remove_mock.assert_not_called()
+        mark_mock.assert_called_once_with(self.company, self.portfolio)
+
+    def test_withdrawal_submitted_is_a_no_op(self):
+        # Already submitted on an earlier cycle -- nothing left to click.
+        with patch.object(ms.tg, "submit_withdrawal") as submit_mock, \
+             patch.object(ms.tg, "remove_portfolio") as remove_mock:
+            result = ms._act_on_flip_mode_decision(
+                self.driver, self.company, self.portfolio, 'withdrawal_submitted'
+            )
+        self.assertTrue(result)
+        submit_mock.assert_not_called()
+        remove_mock.assert_not_called()
 
     def test_enter_flip_mode_calls_enable_and_returns_its_result(self):
         with patch.object(ms.tg, "enable_flip_mode", return_value=True) as enable_mock, \

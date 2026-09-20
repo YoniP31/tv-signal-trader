@@ -23,6 +23,14 @@ class DetectSecondWithdrawalsTests(unittest.TestCase):
             "TopStep": {"username": "u2", "password": "p2"},
         }
         self.addCleanup(setattr, config, "TRADOVATE_ACCOUNTS", self._original_accounts)
+        # The whole mechanism is disabled by default this version (see
+        # config.SECOND_WITHDRAWAL_ENABLED's own comment) -- these tests
+        # cover the underlying detection logic itself, which still exists
+        # and still needs to work correctly whenever it's re-enabled.
+        # SecondWithdrawalDisabledTests below covers the disabled case.
+        self._original_enabled = config.SECOND_WITHDRAWAL_ENABLED
+        config.SECOND_WITHDRAWAL_ENABLED = True
+        self.addCleanup(setattr, config, "SECOND_WITHDRAWAL_ENABLED", self._original_enabled)
         self.driver = MagicMock()
         self.tv_tab = "tv_tab"
 
@@ -152,6 +160,30 @@ class DetectSecondWithdrawalsTests(unittest.TestCase):
             {(d['company'], d['account']) for d in detected},
             {("Apex Trader Funding", "PAAPEX0001"), ("TopStep", "TS0001")},
         )
+
+
+class SecondWithdrawalDisabledTests(unittest.TestCase):
+    """config.SECOND_WITHDRAWAL_ENABLED is False by default this version
+    (disabled at the user's request) -- covers that detect_second_
+    withdrawals is a complete no-op in that state, touching neither
+    Tradovate nor status.json at all."""
+
+    def setUp(self):
+        self._original_enabled = config.SECOND_WITHDRAWAL_ENABLED
+        self.addCleanup(setattr, config, "SECOND_WITHDRAWAL_ENABLED", self._original_enabled)
+        self.driver = MagicMock()
+
+    def test_returns_immediately_with_nothing_detected(self):
+        config.SECOND_WITHDRAWAL_ENABLED = False
+        with patch.object(ss.status, "list_tracked_accounts") as list_mock, \
+             patch.object(ss.trading, "is_tradovate_connected") as connected_mock:
+            detected, connected_company = ss.detect_second_withdrawals(self.driver, "tv_tab", "Apex Trader Funding")
+        self.assertEqual(detected, [])
+        # connected_company is passed straight through, untouched -- no
+        # Tradovate interaction happened at all to change it.
+        self.assertEqual(connected_company, "Apex Trader Funding")
+        list_mock.assert_not_called()
+        connected_mock.assert_not_called()
 
 
 if __name__ == "__main__":

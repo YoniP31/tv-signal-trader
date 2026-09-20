@@ -138,6 +138,15 @@ _DEFAULT_FLIP_MODE_CONSISTENCY_DIVISOR = 0.5
 # FLIP_MODE_REENTRY_BUFFER in .env.
 _DEFAULT_FLIP_MODE_REENTRY_BUFFER = 1500
 
+# Hard code-level kill switch for the whole Second Withdrawal
+# detect-and-re-enter mechanism (signal_source.detect_second_withdrawals/
+# act_on_second_withdrawals) -- disabled for this version at the user's
+# request. Deliberately a plain Python constant, not an .env setting: this
+# is a maintainer-only toggle to flip when rebuilding, not something an
+# end user should be changing at runtime. Flip back to True to re-enable;
+# nothing else about the mechanism has been removed, only gated off.
+SECOND_WITHDRAWAL_ENABLED = False
+
 # When a trade's take-profit would push the account's balance past its max
 # (see trading.adjust_tp_for_max_balance), the TP is capped so the result
 # lands at max + a random buffer in this $ range instead -- looks more
