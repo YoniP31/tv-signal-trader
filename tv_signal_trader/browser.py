@@ -4,6 +4,7 @@ import sys
 import time
 
 from selenium import webdriver
+from selenium.common.exceptions import SessionNotCreatedException
 from selenium.webdriver.chrome.options import Options
 
 from . import ads
@@ -53,11 +54,44 @@ def build_options():
     return options
 
 
+# How many times create_driver() will try launching Chrome, and how long it
+# waits between attempts. chromedriver's handshake with a freshly-launched
+# Chrome can time out under momentary load on a VPS -- antivirus scanning
+# the files a fresh update just extracted, or plain CPU contention -- even
+# though Chrome itself started fine, surfacing as SessionNotCreatedException
+# ("Chrome instance exited"). Seen live: the Chrome process was still
+# running afterward, orphaned and holding the profile's lock file, while
+# chromedriver had already given up and exited -- left alone, that orphan
+# then blocks every later attempt (including the Scheduled Task's own
+# restart) with the same error, indefinitely.
+_CREATE_DRIVER_MAX_ATTEMPTS = 3
+_CREATE_DRIVER_RETRY_PAUSE_SECONDS = 5
+
+
 def create_driver():
     # No explicit Service/executable path: Selenium Manager (built into
     # Selenium 4.6+) detects the installed Chrome version and downloads a
     # matching chromedriver automatically, caching it for later runs.
-    driver = webdriver.Chrome(options=build_options())
+    #
+    # Retries on SessionNotCreatedException (see _CREATE_DRIVER_MAX_ATTEMPTS
+    # above) -- a blind retry would just race the same orphaned Chrome
+    # again, so every failed attempt, including the last, force_kill()s
+    # everything under the profile first. Any other exception (a real
+    # config problem, say) is left to propagate immediately -- this is
+    # deliberately narrow, not a catch-all retry.
+    for attempt in range(1, _CREATE_DRIVER_MAX_ATTEMPTS + 1):
+        try:
+            driver = webdriver.Chrome(options=build_options())
+            break
+        except SessionNotCreatedException as exc:
+            more_to_go = attempt < _CREATE_DRIVER_MAX_ATTEMPTS
+            print(f"  [WARN] Chrome did not start cleanly (attempt {attempt}/{_CREATE_DRIVER_MAX_ATTEMPTS}): {exc}")
+            print("  Clearing anything left behind under the profile" +
+                  (f", retrying in {_CREATE_DRIVER_RETRY_PAUSE_SECONDS}s ..." if more_to_go else " ..."))
+            force_kill()
+            if not more_to_go:
+                raise
+            time.sleep(_CREATE_DRIVER_RETRY_PAUSE_SECONDS)
     driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
         "source": """
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
