@@ -57,6 +57,15 @@ DEV_TREAT_MINI_AS_MICRO = not _RUNNING_COMPILED
 # useful for debugging, e.g. to actually see what TradingGenerator is doing.
 HIDE_TRADINGGENERATOR_WINDOW = True
 
+# The same choice for a run that was started automatically from the command
+# line (`tv-signal-trader.exe web_multi`, i.e. by the remote-deployment
+# Scheduled Task after an update or reboot), where there is nobody at the
+# '>' prompt to be asked "show TradingGenerator's window?". False (default):
+# visible -- so whoever RDPs into an unattended machine can see what it's
+# doing. True: hidden, as HIDE_TRADINGGENERATOR_WINDOW. Admin build only --
+# the user build never shows the window regardless (see cli).
+HIDE_TRADINGGENERATOR_WINDOW_WHEN_AUTO_STARTED = False
+
 # Randomized polling ranges (hardcoded, not .env-configurable -- deliberately
 # so, since these exist purely to avoid a perfectly regular timing signature
 # during long unattended runs, not to be tuned per deployment). Shared by

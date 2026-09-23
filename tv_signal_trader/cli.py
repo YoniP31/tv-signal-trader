@@ -65,6 +65,39 @@ def _startup_command(argv):
     return None
 
 
+def _ask_hide_tg_window():
+    # Lets the user override config.HIDE_TRADINGGENERATOR_WINDOW for
+    # just this run, without editing config.py. Only takes effect if
+    # TradingGenerator's window/tab isn't already open from earlier in
+    # this same browser session (see tg.open_tab) -- asking again in
+    # that case is harmless, just a no-op.
+    default_hidden = config.HIDE_TRADINGGENERATOR_WINDOW
+    choice = input(
+        f"  Show TradingGenerator window this run? (y/n) [default: "
+        f"{'n (hidden)' if default_hidden else 'y (visible)'}]: "
+    ).strip().lower()
+    if choice == "":
+        return None
+    return choice not in ("y", "yes")
+
+
+def _resolve_hide_tg_window(ask=True):
+    # The regular-user build never asks and is never shown the window,
+    # full stop -- not just defaulted to hidden, so it can't be flipped
+    # visible by a stray config.py edit either. Only the admin build
+    # gets a say (see _ask_hide_tg_window above) -- except when the
+    # command was auto-started from the command line (ask=False),
+    # where there's nobody to answer: uses
+    # config.HIDE_TRADINGGENERATOR_WINDOW_WHEN_AUTO_STARTED (visible by
+    # default). That choice is carried through every in-app browser
+    # relaunch of the run, so a restart after a crash matches it too.
+    if not config.IS_ADMIN_BUILD:
+        return True
+    if not ask:
+        return config.HIDE_TRADINGGENERATOR_WINDOW_WHEN_AUTO_STARTED
+    return _ask_hide_tg_window()
+
+
 def _run_test_menu(driver, tv_tab, hide_tg_window=None, relaunch_browser=None):
     """The 'test' command's submenu -- ad hoc, one-off manual verification
     of individual pieces (placing an order, reporting a Trade Result,
@@ -585,34 +618,6 @@ def main():
         os._exit(0)
 
     signal.signal(signal.SIGINT, _handle_sigint)
-
-    def _ask_hide_tg_window():
-        # Lets the user override config.HIDE_TRADINGGENERATOR_WINDOW for
-        # just this run, without editing config.py. Only takes effect if
-        # TradingGenerator's window/tab isn't already open from earlier in
-        # this same browser session (see tg.open_tab) -- asking again in
-        # that case is harmless, just a no-op.
-        default_hidden = config.HIDE_TRADINGGENERATOR_WINDOW
-        choice = input(
-            f"  Show TradingGenerator window this run? (y/n) [default: "
-            f"{'n (hidden)' if default_hidden else 'y (visible)'}]: "
-        ).strip().lower()
-        if choice == "":
-            return None
-        return choice not in ("y", "yes")
-
-    def _resolve_hide_tg_window(ask=True):
-        # The regular-user build never asks and is never shown the window,
-        # full stop -- not just defaulted to hidden, so it can't be flipped
-        # visible by a stray config.py edit either. Only the admin build
-        # gets a say (see _ask_hide_tg_window above) -- except when the
-        # command was auto-started from the command line (ask=False),
-        # where there's nobody to answer: falls back to the config default.
-        if not config.IS_ADMIN_BUILD:
-            return True
-        if not ask:
-            return None
-        return _ask_hide_tg_window()
 
     def _run_trading_loop(**kwargs):
         # The regular-user build's web/web_multi runs silently -- see

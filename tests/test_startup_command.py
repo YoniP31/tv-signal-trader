@@ -46,5 +46,52 @@ class StartupCommandTests(unittest.TestCase):
         )
 
 
+class ResolveHideTgWindowTests(unittest.TestCase):
+    """Whether TradingGenerator's window is hidden (True), a visible tab
+    (False), or left to config.HIDE_TRADINGGENERATOR_WINDOW (None) -- and in
+    particular that an auto-started run, where nobody can be asked, comes up
+    visible by default."""
+
+    def test_the_shipped_default_for_an_auto_started_run_is_visible(self):
+        self.assertIs(cli.config.HIDE_TRADINGGENERATOR_WINDOW_WHEN_AUTO_STARTED, False)
+
+    def test_an_auto_started_admin_run_is_visible_and_never_asks(self):
+        with patch.object(cli.config, "IS_ADMIN_BUILD", True), \
+             patch("builtins.input") as ask:
+            self.assertIs(cli._resolve_hide_tg_window(ask=False), False)
+        ask.assert_not_called()
+
+    def test_the_auto_started_default_can_be_flipped_back_to_hidden_in_code(self):
+        with patch.object(cli.config, "IS_ADMIN_BUILD", True), \
+             patch.object(cli.config, "HIDE_TRADINGGENERATOR_WINDOW_WHEN_AUTO_STARTED", True):
+            self.assertIs(cli._resolve_hide_tg_window(ask=False), True)
+
+    def test_the_auto_started_choice_does_not_depend_on_the_interactive_default(self):
+        with patch.object(cli.config, "IS_ADMIN_BUILD", True), \
+             patch.object(cli.config, "HIDE_TRADINGGENERATOR_WINDOW", True):
+            self.assertIs(cli._resolve_hide_tg_window(ask=False), False)
+
+    def test_a_typed_command_still_asks_and_enter_keeps_the_config_default(self):
+        with patch.object(cli.config, "IS_ADMIN_BUILD", True), \
+             patch("builtins.input", return_value="") as ask:
+            self.assertIsNone(cli._resolve_hide_tg_window(ask=True))
+        ask.assert_called_once()
+
+    def test_a_typed_command_honors_yes_and_no(self):
+        with patch.object(cli.config, "IS_ADMIN_BUILD", True):
+            with patch("builtins.input", return_value="y"):
+                self.assertIs(cli._resolve_hide_tg_window(ask=True), False)
+            with patch("builtins.input", return_value="n"):
+                self.assertIs(cli._resolve_hide_tg_window(ask=True), True)
+
+    def test_the_user_build_is_always_hidden_however_it_was_started(self):
+        with patch.object(cli.config, "IS_ADMIN_BUILD", False), \
+             patch.object(cli.config, "HIDE_TRADINGGENERATOR_WINDOW_WHEN_AUTO_STARTED", False), \
+             patch("builtins.input") as ask:
+            self.assertIs(cli._resolve_hide_tg_window(ask=False), True)
+            self.assertIs(cli._resolve_hide_tg_window(ask=True), True)
+        ask.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
