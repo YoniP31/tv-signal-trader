@@ -1,4 +1,7 @@
-# One machine per line: "host" or "user@host". "#" starts a comment.
+# One machine per line: "host" or "user@host", plus ":port" if its SSH is not on
+# port 22 (e.g. "203.0.113.9:56777"). "#" starts a comment.
 # Copy this to vps_list.txt (which is gitignored) and list your fleet.
 169.58.224.170
 # Administrator@203.0.113.7
+# 203.0.113.9:56777
+# Administrator@203.0.113.10:56777

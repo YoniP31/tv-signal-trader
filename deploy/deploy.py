@@ -16,7 +16,11 @@ Per machine, in order:
   3. decide whether the bot must restart at all: only when the exe *it runs* is
      being replaced, or .env is (config is read once at startup). Pushing only
      the other variant's exe, or accounts_to_add.txt, never interrupts trading.
-  4. stop the bot (stop-bot.ps1) and confirm it's gone   -> stop_failed
+  4. refresh stop-bot.ps1 on the machine from deploy/stop-bot.ps1, then stop the
+     bot with it and confirm it's gone                    -> stop_failed
+     From here on the bot may be down, so whatever goes wrong -- a stop that
+     times out or fails, a slow machine, an unexpected error -- the tool
+     tries to start it again (on its previous files) before reporting.
   5. per file: upload to "<name>.new", verify its SHA-256 on the VPS, and only
      then move it into place (a half-written or corrupt file never replaces a
      working one)                                        -> copy_failed
@@ -68,9 +72,17 @@ DEFAULT_CONFIG = {
         "task_name": "TVSignalTrader",
     },
     "release": {"repo": "YoniP31/tv-signal-trader", "tag": "latest"},
-    "max_parallel": 5,
+    "max_parallel": 1,
     "verify_seconds": 25,
+    # Seconds to wait for a command on a VPS. These machines can be badly
+    # slowed by the bot's own Chrome, so a short wait reads as a failure on a
+    # perfectly healthy machine. "stop" is for stop-bot.ps1; "command" is for
+    # every other quick command (tasklist, schtasks, move, ...).
+    "timeouts": {"stop": 300, "command": 90},
 }
+
+# The stop script that gets refreshed on each VPS before every stop.
+STOP_SCRIPT = DEPLOY_DIR / "stop-bot.ps1"
 
 OK_STATUSES = ("ok", "ok_no_restart", "dry_run")
 
@@ -133,15 +145,31 @@ def selected_files(cfg, override=None):
     return [k for k in REMOTE_FILENAMES if k in keys]  # stable order: exes first, .env last
 
 
+def split_host_port(host):
+    """`host` or `host:port` -> (host, port); port is None when there isn't one.
+    A port is a single trailing `:digits`; anything else (such as an IPv6
+    address, which has several colons) is left whole. Raises ConfigError for
+    a port outside 1-65535."""
+    name, sep, port = host.rpartition(":")
+    if not (sep and name and ":" not in name and port.isdigit()):
+        return host, None
+    if not 1 <= int(port) <= 65535:
+        raise ConfigError(f"'{host}': port {port} is not between 1 and 65535")
+    return name, int(port)
+
+
 def parse_targets(text, default_user):
-    """One target per line: `host` or `user@host`; `#` starts a comment."""
+    """One target per line: `host`, `host:port`, `user@host` or `user@host:port`
+    (for machines whose SSH isn't on port 22); `#` starts a comment."""
     targets, seen = [], set()
     for raw in text.splitlines():
         line = raw.split("#", 1)[0].strip()
         if not line:
             continue
         user, _, host = line.rpartition("@")
-        target = (user or default_user, host.strip())
+        host = host.strip()
+        split_host_port(host)  # validate the port now, not mid-deploy
+        target = (user or default_user, host)
         if target not in seen:
             seen.add(target)
             targets.append(target)
@@ -244,7 +272,10 @@ class Remote:
     (defaults to subprocess.run) so the whole flow is testable without a network."""
 
     def __init__(self, user, host, cfg, runner=subprocess.run):
-        self.user, self.host, self.runner = user, host, runner
+        # `host` may carry a port ("1.2.3.4:56777"): ssh wants it as -p and
+        # scp as -P (capital), never glued onto the host name.
+        self.user, self.runner = user, runner
+        self.host, self.port = split_host_port(host)
         ssh = cfg["ssh"]
         self.connect_timeout = ssh["connect_timeout"]
         self._opts = [
@@ -254,17 +285,19 @@ class Remote:
             "-o", f"ConnectTimeout={self.connect_timeout}",
             "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4",
         ]
+        self._ssh_port = ["-p", str(self.port)] if self.port else []
+        self._scp_port = ["-P", str(self.port)] if self.port else []
 
     def run(self, command, timeout=60):
         """`command` runs under cmd.exe on the VPS (Windows OpenSSH's default shell)."""
         return self.runner(
-            ["ssh", *self._opts, f"{self.user}@{self.host}", command],
+            ["ssh", *self._opts, *self._ssh_port, f"{self.user}@{self.host}", command],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
         )
 
     def copy(self, local_path, remote_posix_path, timeout=900):
         return self.runner(
-            ["scp", *self._opts, str(local_path), f"{self.user}@{self.host}:{remote_posix_path}"],
+            ["scp", *self._opts, *self._scp_port, str(local_path), f"{self.user}@{self.host}:{remote_posix_path}"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
         )
 
@@ -302,9 +335,18 @@ def parse_certutil_hash(text):
     return None
 
 
-def is_running(remote, exe_name):
-    r = remote.run(f'tasklist /fi "imagename eq {exe_name}" /fo csv /nh', timeout=30)
+def is_running(remote, exe_name, timeout=90):
+    r = remote.run(f'tasklist /fi "imagename eq {exe_name}" /fo csv /nh', timeout=timeout)
     return exe_name.lower() in r.stdout.lower()
+
+
+def check_running(remote, exe_name, timeout=90):
+    """True/False, or None when the machine didn't answer in time -- "don't
+    know" is a real answer here, and must not be mistaken for "not running"."""
+    try:
+        return is_running(remote, exe_name, timeout)
+    except subprocess.TimeoutExpired:
+        return None
 
 
 class HostResult:
@@ -324,8 +366,78 @@ def _tail(text, n=200):
     return (text or "").strip().replace("\r", " ").replace("\n", " ")[-n:]
 
 
+def refresh_stop_script(remote, script_path, install_win, install_posix, timeout, note):
+    """Puts the current stop-bot.ps1 on the machine (upload, verify, move --
+    the same care as any other file), so a fix to it reaches every machine
+    without re-running setup_vps.ps1 on each. Never raises and never blocks
+    an update: if it can't, the script already there is used."""
+    if not script_path or not Path(script_path).exists():
+        note("no local stop-bot.ps1 to upload; using the one on the machine")
+        return
+    staged, final = f"{install_win}\\stop-bot.ps1.new", f"{install_win}\\stop-bot.ps1"
+    try:
+        r = remote.copy(script_path, f"{install_posix}/stop-bot.ps1.new", timeout=timeout)
+        if r.returncode != 0:
+            note(f"could not upload stop-bot.ps1 ({_tail(r.stderr)}); using the one on the machine")
+            return
+        r = remote.run(f'certutil -hashfile "{staged}" SHA256', timeout=timeout)
+        if parse_certutil_hash(r.stdout) != sha256_of(script_path):
+            remote.run(f'del /Q "{staged}"', timeout=timeout)
+            note("stop-bot.ps1 failed its SHA-256 check after upload; using the one on the machine")
+            return
+        r = remote.run(f'move /Y "{staged}" "{final}"', timeout=timeout)
+        note("updated stop-bot.ps1" if r.returncode == 0
+             else f"could not move stop-bot.ps1 into place ({_tail(r.stderr or r.stdout)}); using the one on the machine")
+    except Exception as exc:  # incl. a timeout: this step is only ever a bonus
+        note(f"could not update stop-bot.ps1 ({type(exc).__name__}); using the one on the machine")
+
+
+def stop_bot(remote, install_win, exe_name, cfg, sleep):
+    """Runs stop-bot.ps1 and confirms the bot is really gone. Returns None on
+    success, otherwise a sentence saying what went wrong. Never raises."""
+    timeouts = cfg["timeouts"]
+    try:
+        r = remote.run(f'powershell -NoProfile -ExecutionPolicy Bypass -File "{install_win}\\stop-bot.ps1"',
+                       timeout=timeouts["stop"])
+    except subprocess.TimeoutExpired:
+        return f"stop-bot.ps1 did not finish within {timeouts['stop']}s"
+    except Exception as exc:
+        return f"stop-bot.ps1 could not be run ({type(exc).__name__}: {exc})"
+    if r.returncode != 0:
+        return _tail(r.stdout or r.stderr) or f"stop-bot.ps1 failed (exit {r.returncode})"
+    for _ in range(5):
+        if check_running(remote, exe_name, timeouts["command"]) is False:
+            return None
+        sleep(1)
+    return f"could not confirm {exe_name} stopped after stop-bot.ps1"
+
+
+def bring_back(remote, task, exe_name, cfg, sleep, note):
+    """Best effort at leaving the machine the way it was found: if the bot is
+    not (known to be) running, start its task again on its existing files and
+    check it stays up. Returns a sentence saying how that went. Never raises.
+    Starting the task while the bot IS running is harmless -- Scheduled Tasks
+    don't start a second instance."""
+    timeouts = cfg["timeouts"]
+    try:
+        note("checking whether the bot needs bringing back")
+        running = check_running(remote, exe_name, timeouts["command"])
+        if running:
+            return "the bot is still running on its previous files"
+        note("starting the bot again")
+        r = remote.run(f'schtasks /run /tn "{task}"', timeout=timeouts["command"])
+        if r.returncode != 0:
+            return f"COULD NOT RESTART THE BOT ({_tail(r.stderr or r.stdout)}) - check this machine"
+        sleep(cfg["verify_seconds"])
+        if check_running(remote, exe_name, timeouts["command"]):
+            return "the bot was started again on its previous files"
+        return "the bot was started again but is not running - check this machine (see its app.log)"
+    except Exception as exc:
+        return f"COULD NOT CHECK OR RESTART THE BOT ({type(exc).__name__}) - check this machine"
+
+
 def update_host(target, cfg, files, hashes, dry_run=False,
-                runner=subprocess.run, sleep=time.sleep, log=None):
+                runner=subprocess.run, sleep=time.sleep, log=None, stop_script=STOP_SCRIPT):
     """Runs the whole update for one VPS. `files` is {file key: local Path};
     `hashes` is {file key: sha256}. Never raises for an ordinary failure --
     returns a HostResult whose status says what happened."""
@@ -345,6 +457,9 @@ def update_host(target, cfg, files, hashes, dry_run=False,
 
     remote = Remote(user, host, cfg, runner=runner)
     task = cfg["remote"]["task_name"]
+    quick = cfg["timeouts"]["command"]
+    vps_exe = None
+    bot_touched = False  # once True, the bot may be down and must be brought back
 
     try:
         note("checking connection")
@@ -353,7 +468,7 @@ def update_host(target, cfg, files, hashes, dry_run=False,
             return finish("unreachable", _tail(r.stderr))
 
         note("reading the scheduled task")
-        r = remote.run(f'schtasks /query /tn "{task}" /xml', timeout=30)
+        r = remote.run(f'schtasks /query /tn "{task}" /xml', timeout=quick)
         vps_exe = parse_task_exe(r.stdout) if r.returncode == 0 else None
         if not vps_exe:
             return finish("no_task", f"no usable '{task}' task - run deploy/setup_vps.ps1 on this VPS first")
@@ -375,20 +490,14 @@ def update_host(target, cfg, files, hashes, dry_run=False,
                                      f"{' and restart' if needs_restart else ' (no restart)'}")
 
         if needs_restart:
+            refresh_stop_script(remote, stop_script, install_win, install_posix, quick, note)
             note("stopping the bot")
-            try:
-                r = remote.run(f'powershell -NoProfile -ExecutionPolicy Bypass -File "{install_win}\\stop-bot.ps1"',
-                               timeout=120)
-            except subprocess.TimeoutExpired:
-                return finish("stop_failed", "stop-bot.ps1 timed out - the bot may be stopped; check this machine")
-            stopped = False
-            for _ in range(5):
-                if not is_running(remote, vps_exe):
-                    stopped = True
-                    break
-                sleep(1)
-            if r.returncode != 0 or not stopped:
-                return finish("stop_failed", _tail(r.stderr) or f"{vps_exe} still running after stop-bot.ps1")
+            bot_touched = True  # from here the bot may be down, even if the stop "fails"
+            problem = stop_bot(remote, install_win, vps_exe, cfg, sleep)
+            if problem:
+                note(f"stop problem: {problem}")
+                outcome = bring_back(remote, task, vps_exe, cfg, sleep, note)
+                return finish("stop_failed", f"{problem} -- {outcome}")
 
         # From here on the bot may be stopped, so nothing below may raise past
         # the restart: whatever goes wrong copying, the start still happens.
@@ -404,12 +513,12 @@ def update_host(target, cfg, files, hashes, dry_run=False,
                     break
                 r = remote.run(f'certutil -hashfile "{staged}" SHA256', timeout=120)
                 if parse_certutil_hash(r.stdout) != hashes[key]:
-                    remote.run(f'del /Q "{staged}"', timeout=30)
+                    remote.run(f'del /Q "{staged}"', timeout=quick)
                     copy_error = f"{name} failed its SHA-256 check after upload (not installed)"
                     break
                 if key == "env":
-                    remote.run(f'if exist "{final}" copy /Y "{final}" "{final}.bak"', timeout=30)
-                r = remote.run(f'move /Y "{staged}" "{final}"', timeout=30)
+                    remote.run(f'if exist "{final}" copy /Y "{final}" "{final}.bak"', timeout=quick)
+                r = remote.run(f'move /Y "{staged}" "{final}"', timeout=quick)
                 if r.returncode != 0:
                     copy_error = f"could not move {name} into place: {_tail(r.stderr or r.stdout)}"
                     break
@@ -426,7 +535,7 @@ def update_host(target, cfg, files, hashes, dry_run=False,
 
         note("starting the bot")
         try:
-            r = remote.run(f'schtasks /run /tn "{task}"', timeout=30)
+            r = remote.run(f'schtasks /run /tn "{task}"', timeout=quick)
             start_error = None if r.returncode == 0 else _tail(r.stderr or r.stdout)
         except subprocess.TimeoutExpired:
             start_error = "timed out starting the task"
@@ -436,7 +545,7 @@ def update_host(target, cfg, files, hashes, dry_run=False,
         note(f"waiting {cfg['verify_seconds']}s to confirm it stays up")
         sleep(cfg["verify_seconds"])
         try:
-            running = is_running(remote, vps_exe)
+            running = is_running(remote, vps_exe, quick)
         except subprocess.TimeoutExpired:
             running = False
         if not running:
@@ -446,9 +555,15 @@ def update_host(target, cfg, files, hashes, dry_run=False,
             return finish("copy_failed", copy_error + " - the bot was restarted on its previous files")
         return finish("ok")
     except subprocess.TimeoutExpired as exc:
-        return finish("unreachable", f"timed out: {_tail(str(exc.cmd) if exc.cmd else '')}")
+        detail = f"timed out: {_tail(str(exc.cmd) if exc.cmd else '')}"
+        if bot_touched:  # the bot may already be stopped: never leave it down
+            return finish("error", f"{detail} -- " + bring_back(remote, task, vps_exe, cfg, sleep, note))
+        return finish("unreachable", detail)
     except Exception as exc:  # one machine's surprise must never abort the whole batch
-        return finish("error", f"{type(exc).__name__}: {exc}")
+        detail = f"{type(exc).__name__}: {exc}"
+        if bot_touched:
+            return finish("error", f"{detail} -- " + bring_back(remote, task, vps_exe, cfg, sleep, note))
+        return finish("error", detail)
 
 
 # --------------------------------------------------------------------------

@@ -28,6 +28,11 @@ def _completed(returncode=0, stdout="", stderr=""):
     return subprocess.CompletedProcess([], returncode, stdout=stdout, stderr=stderr)
 
 
+def _exe_upload(vps):
+    """The scp call that uploads the exe (stop-bot.ps1 is uploaded too)."""
+    return next(c for c in vps.calls if c[0] == "scp" and c[2].endswith("tv-signal-trader.exe.new"))
+
+
 class FakeVps:
     """Stands in for subprocess.run for ssh/scp against one VPS."""
 
@@ -35,7 +40,15 @@ class FakeVps:
 
     def __init__(self, task_exe="tv-signal-trader.exe", reachable=True, has_task=True, stop_works=True,
                  scp_ok=True, hash_ok=True, start_works=True, stays_up=True, scp_times_out=False,
-                 task_dir=DEFAULT_TASK_DIR):
+                 task_dir=DEFAULT_TASK_DIR, stop_hangs=False, stop_kills_first=True,
+                 tasklist_timeouts=0, run_task_raises=False, stop_output=""):
+        # stop_hangs: stop-bot.ps1 never returns (the ssh times out); stop_kills_first: ...but had
+        # already killed the bot by then. tasklist_timeouts: how many tasklist calls time out
+        # before it answers. run_task_raises: `schtasks /run` blows up with an unexpected error.
+        self.stop_hangs, self.stop_kills_first = stop_hangs, stop_kills_first
+        self.tasklist_timeouts, self.run_task_raises = tasklist_timeouts, run_task_raises
+        self.stop_output = stop_output
+        self.timeouts = []  # (command, timeout) for every ssh call
         self.task_exe, self.reachable, self.has_task = task_exe, reachable, has_task
         self.task_dir = task_dir  # None -> the task's command is a bare file name, no folder
         self.stop_works, self.scp_ok, self.hash_ok = stop_works, scp_ok, hash_ok
@@ -57,6 +70,7 @@ class FakeVps:
 
         command = args[-1]
         self.calls.append(("ssh", command))
+        self.timeouts.append((command, kwargs.get("timeout")))
         if not self.reachable:
             return _completed(255, stderr="Connection timed out")
         if command == "echo ok":
@@ -66,18 +80,27 @@ class FakeVps:
                 return _completed(1, stderr="ERROR: The system cannot find the file specified.")
             command = f"{self.task_dir}\\{self.task_exe}" if self.task_dir else self.task_exe
             return _completed(0, f"<Task><Actions><Exec><Command>{command}</Command></Exec></Actions></Task>")
-        if "stop-bot.ps1" in command:
+        if command.startswith("powershell") and "stop-bot.ps1" in command:
+            if self.stop_hangs:
+                if self.stop_kills_first:
+                    self.running = False
+                raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
             if not self.stop_works:
-                return _completed(1, stderr="stop-bot.ps1 not found")
+                return _completed(1, stdout=self.stop_output)
             self.running = False
             return _completed(0)
         if command.startswith("tasklist"):
+            if self.tasklist_timeouts > 0:
+                self.tasklist_timeouts -= 1
+                raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
             return _completed(0, f'"{self.task_exe}","1234","Console","1","10,000 K"\r\n' if self.running
                               else "INFO: No tasks are running which match the specified criteria.\r\n")
         if command.startswith("certutil"):
             digest = self._last_upload_hash if self.hash_ok else "0" * 64
             return _completed(0, f"SHA256 hash of file x:\r\n{digest}\r\nCertUtil: -hashfile command completed successfully.\r\n")
         if command.startswith("schtasks /run"):
+            if self.run_task_raises:
+                raise OSError("connection reset")
             if not self.start_works:
                 return _completed(1, stderr="ERROR: cannot start")
             self.running = self.stays_up
@@ -117,7 +140,7 @@ class UpdateHostTests(unittest.TestCase):
         result = self._run(vps, ["admin_exe"])
         self.assertEqual(result.status, "ok", result.detail)
         stop, upload, hashcheck, move, start = self._order(
-            vps, "stop-bot.ps1", "tv-signal-trader.exe.new", "certutil", "move /Y", "schtasks /run")
+            vps, "-File", "tv-signal-trader.exe.new", '.exe.new" SHA256', '.exe.new" "', "schtasks /run")
         self.assertLess(stop, upload)
         self.assertLess(upload, hashcheck)
         self.assertLess(hashcheck, move)
@@ -126,7 +149,7 @@ class UpdateHostTests(unittest.TestCase):
     def test_upload_goes_to_a_staging_name_in_the_install_dir(self):
         vps = FakeVps()
         self._run(vps, ["admin_exe"])
-        scp_call = next(c for c in vps.calls if c[0] == "scp")
+        scp_call = _exe_upload(vps)
         self.assertEqual(scp_call[2], "Administrator@1.2.3.4:C:/Users/Administrator/Desktop/tv-signal-trader/tv-signal-trader.exe.new")
 
     # --- the install folder comes from the machine's own task ---
@@ -136,11 +159,11 @@ class UpdateHostTests(unittest.TestCase):
         vps = FakeVps(task_dir=folder)
         result = self._run(vps, ["admin_exe"])
         self.assertEqual(result.status, "ok", result.detail)
-        scp_call = next(c for c in vps.calls if c[0] == "scp")
+        scp_call = _exe_upload(vps)
         self.assertEqual(scp_call[2], "Administrator@1.2.3.4:" + folder.replace("\\", "/") + "/tv-signal-trader.exe.new")
-        stop = next(c for c in vps.ssh_commands() if "stop-bot.ps1" in c)
+        stop = next(c for c in vps.ssh_commands() if c.startswith("powershell"))
         self.assertIn(f'"{folder}\\stop-bot.ps1"', stop)
-        move = next(c for c in vps.ssh_commands() if c.startswith("move /Y"))
+        move = next(c for c in vps.ssh_commands() if c.startswith("move /Y") and "tv-signal-trader.exe.new" in c)
         self.assertIn(f'"{folder}\\tv-signal-trader.exe"', move)
         self.assertNotIn("Desktop\\tv-signal-trader\\", " ".join(vps.ssh_commands()))
 
@@ -148,13 +171,13 @@ class UpdateHostTests(unittest.TestCase):
         for folder in ("C:\\bots\\tv-signal-trader-v1.0.0", "D:\\tv-signal-trader-v1.1.0"):
             vps = FakeVps(task_dir=folder)
             self.assertEqual(self._run(vps, ["admin_exe"]).status, "ok")
-            scp_call = next(c for c in vps.calls if c[0] == "scp")
+            scp_call = _exe_upload(vps)
             self.assertIn(folder.replace("\\", "/"), scp_call[2])
 
     def test_the_configured_install_dir_is_the_fallback_when_the_task_has_no_folder(self):
         vps = FakeVps(task_dir=None)  # <Command>tv-signal-trader.exe</Command>
         self.assertEqual(self._run(vps, ["admin_exe"]).status, "ok")
-        scp_call = next(c for c in vps.calls if c[0] == "scp")
+        scp_call = _exe_upload(vps)
         self.assertEqual(scp_call[2], "Administrator@1.2.3.4:C:/Users/Administrator/Desktop/tv-signal-trader/tv-signal-trader.exe.new")
 
     # --- deciding whether to interrupt trading at all ---
@@ -180,7 +203,7 @@ class UpdateHostTests(unittest.TestCase):
         vps = FakeVps()
         result = self._run(vps, ["env"])
         self.assertEqual(result.status, "ok", result.detail)
-        backup, move = self._order(vps, ".env.bak", "move /Y")
+        backup, move = self._order(vps, ".env.bak", '.env.new" "')
         self.assertLess(backup, move)
         self.assertTrue(any("stop-bot" in c for c in vps.ssh_commands()))
 
@@ -198,11 +221,116 @@ class UpdateHostTests(unittest.TestCase):
         self.assertIn("setup_vps.ps1", result.detail)
         self.assertFalse(any("stop-bot" in c for c in vps.ssh_commands()))
 
-    def test_a_failed_stop_aborts_without_copying_or_starting(self):
-        vps = FakeVps(stop_works=False)
-        self.assertEqual(self._run(vps, ["admin_exe"]).status, "stop_failed")
-        self.assertFalse(any(c[0] == "scp" for c in vps.calls))
+    def test_a_failed_stop_never_replaces_files_and_reports_what_survived(self):
+        vps = FakeVps(stop_works=False, stop_output="Still running after 3 passes: chrome (4321)")
+        result = self._run(vps, ["admin_exe"])
+        self.assertEqual(result.status, "stop_failed")
+        self.assertIn("chrome (4321)", result.detail)
+        self.assertFalse(any(c[0] == "scp" and c[2].endswith("tv-signal-trader.exe.new") for c in vps.calls))
+        self.assertFalse(any("move /Y" in c and "tv-signal-trader.exe.new" in c for c in vps.ssh_commands()))
+        # the bot was never actually killed, so there is nothing to bring back
         self.assertFalse(any("schtasks /run" in c for c in vps.ssh_commands()))
+        self.assertTrue(vps.running)
+
+    # --- a stop that goes wrong must not leave the bot down ---
+
+    def test_a_stop_that_times_out_after_killing_the_bot_starts_it_again(self):
+        # Seen live: stop-bot.ps1 killed the bot, then the slow VPS did not finish in time.
+        vps = FakeVps(stop_hangs=True, stop_kills_first=True)
+        result = self._run(vps, ["admin_exe"])
+        self.assertEqual(result.status, "stop_failed")
+        self.assertIn("did not finish", result.detail)
+        self.assertIn("started again", result.detail)
+        self.assertTrue(vps.running, "the bot must not be left down")
+        self.assertFalse(any(c[0] == "scp" and c[2].endswith("tv-signal-trader.exe.new") for c in vps.calls))
+
+    def test_a_stop_that_times_out_with_the_bot_still_running_leaves_it_alone(self):
+        vps = FakeVps(stop_hangs=True, stop_kills_first=False)
+        result = self._run(vps, ["admin_exe"])
+        self.assertEqual(result.status, "stop_failed")
+        self.assertIn("still running", result.detail)
+        self.assertFalse(any("schtasks /run" in c for c in vps.ssh_commands()))
+        self.assertTrue(vps.running)
+
+    def test_a_slow_machine_whose_tasklist_times_out_after_the_stop_is_not_left_down(self):
+        # Seen live: stop-bot.ps1 finished, then every confirmation tasklist timed out.
+        vps = FakeVps(tasklist_timeouts=5)
+        result = self._run(vps, ["admin_exe"])
+        self.assertEqual(result.status, "stop_failed")
+        self.assertIn("could not confirm", result.detail)
+        self.assertTrue(vps.running, "the bot must not be left down")
+
+    def test_a_tasklist_timeout_that_clears_up_does_not_fail_the_update(self):
+        vps = FakeVps(tasklist_timeouts=2)  # two slow answers, then normal
+        self.assertEqual(self._run(vps, ["admin_exe"]).status, "ok")
+
+    def test_a_failed_recovery_is_reported_loudly(self):
+        vps = FakeVps(stop_hangs=True, stop_kills_first=True, start_works=False)
+        result = self._run(vps, ["admin_exe"])
+        self.assertEqual(result.status, "stop_failed")
+        self.assertIn("COULD NOT RESTART", result.detail)
+
+    def test_an_unexpected_error_after_the_stop_still_tries_to_bring_the_bot_back(self):
+        vps = FakeVps(run_task_raises=True)
+        result = self._run(vps, ["admin_exe"])
+        self.assertEqual(result.status, "error")
+        self.assertIn("COULD NOT", result.detail)
+        self.assertEqual(sum("schtasks /run" in c for c in vps.ssh_commands()), 2)  # the start, then the recovery try
+
+    def test_the_stop_gets_a_long_timeout_and_quick_commands_a_generous_one(self):
+        vps = FakeVps()
+        self._run(vps, ["admin_exe"])
+        stop = next(t for c, t in vps.timeouts if c.startswith("powershell"))
+        self.assertEqual(stop, self.cfg["timeouts"]["stop"])
+        self.assertGreaterEqual(stop, 300)
+        tasklist = [t for c, t in vps.timeouts if c.startswith("tasklist")]
+        self.assertTrue(tasklist and all(t == self.cfg["timeouts"]["command"] for t in tasklist))
+        self.assertGreaterEqual(self.cfg["timeouts"]["command"], 90)
+
+    def test_the_timeouts_can_be_overridden_in_the_config(self):
+        vps = FakeVps()
+        self.cfg = deploy._merge(self.cfg, {"timeouts": {"stop": 999}})
+        self._run(vps, ["admin_exe"])
+        stop = next(t for c, t in vps.timeouts if c.startswith("powershell"))
+        self.assertEqual(stop, 999)
+        self.assertEqual(self.cfg["timeouts"]["command"], deploy.DEFAULT_CONFIG["timeouts"]["command"])
+
+    # --- stop-bot.ps1 is kept current on every machine ---
+
+    def test_the_current_stop_script_is_uploaded_verified_and_moved_before_the_stop(self):
+        vps = FakeVps()
+        self.assertEqual(self._run(vps, ["admin_exe"]).status, "ok")
+        upload = next(c for c in vps.calls if c[0] == "scp" and c[2].endswith("stop-bot.ps1.new"))
+        self.assertEqual(upload[1], str(deploy.STOP_SCRIPT))
+        upload_i, hash_i, move_i, stop_i = self._order(
+            vps, "stop-bot.ps1.new", 'stop-bot.ps1.new" SHA256', 'stop-bot.ps1.new" "', "-File")
+        self.assertLess(upload_i, hash_i)
+        self.assertLess(hash_i, move_i)
+        self.assertLess(move_i, stop_i)
+
+    def test_a_stop_script_that_cannot_be_uploaded_never_blocks_the_update(self):
+        vps = FakeVps()
+
+        def scp_fails_for_the_script(args, **kwargs):
+            if args[0] == "scp" and args[-1].endswith("stop-bot.ps1.new"):
+                vps.calls.append(("scp", args[-2], args[-1]))
+                return _completed(1, stderr="permission denied")
+            return vps(args, **kwargs)
+
+        result = deploy.update_host(
+            ("Administrator", "1.2.3.4"), self.cfg, {"admin_exe": self.paths["admin_exe"]},
+            {"admin_exe": self.hashes["admin_exe"]}, runner=scp_fails_for_the_script, sleep=lambda s: None)
+        self.assertEqual(result.status, "ok", result.detail)
+        self.assertTrue(any("could not upload stop-bot.ps1" in s for s in result.steps))
+
+    def test_a_missing_local_stop_script_is_skipped(self):
+        vps = FakeVps()
+        result = deploy.update_host(
+            ("Administrator", "1.2.3.4"), self.cfg, {"admin_exe": self.paths["admin_exe"]},
+            {"admin_exe": self.hashes["admin_exe"]}, runner=vps, sleep=lambda s: None,
+            stop_script=self.dir / "does-not-exist.ps1")
+        self.assertEqual(result.status, "ok", result.detail)
+        self.assertFalse(any(c[0] == "scp" and c[2].endswith("stop-bot.ps1.new") for c in vps.calls))
 
     def test_dry_run_changes_nothing(self):
         vps = FakeVps()
@@ -251,6 +379,121 @@ class UpdateHostTests(unittest.TestCase):
             raise OSError("ssh not found")
         result = deploy.update_host(("Administrator", "1.2.3.4"), self.cfg, {}, {}, runner=boom, sleep=lambda s: None)
         self.assertEqual(result.status, "error")
+
+
+class StopScriptTests(unittest.TestCase):
+    """deploy/stop-bot.ps1 is the source of truth; setup_vps.ps1 embeds a copy
+    (setup is run by hand on a VPS, so it must be self-contained)."""
+
+    DEPLOY_DIR = Path(__file__).resolve().parent.parent / "deploy"
+
+    def _embedded_copy(self):
+        text = (self.DEPLOY_DIR / "setup_vps.ps1").read_text(encoding="ascii").replace("\r\n", "\n")
+        start = text.index("$stopScript = @'\n") + len("$stopScript = @'\n")
+        return text[start:text.index("\n'@", start)]
+
+    def test_setup_embeds_exactly_the_stop_script(self):
+        canonical = (self.DEPLOY_DIR / "stop-bot.ps1").read_text(encoding="ascii").replace("\r\n", "\n")
+        self.assertEqual(self._embedded_copy().strip(), canonical.strip())
+
+    def test_the_powershell_scripts_are_pure_ascii(self):
+        # Windows PowerShell 5.1 can misread other characters in a file with no BOM.
+        for name in ("stop-bot.ps1", "setup_vps.ps1"):
+            (self.DEPLOY_DIR / name).read_bytes().decode("ascii")
+
+    def test_the_stop_script_reports_failure_when_anything_survives(self):
+        text = (self.DEPLOY_DIR / "stop-bot.ps1").read_text(encoding="ascii")
+        self.assertIn("exit 0", text)
+        self.assertIn("exit 1", text)
+
+    def test_the_stop_script_asks_wmi_only_for_chrome(self):
+        # Reading every process's command line is what timed out on slow machines.
+        text = (self.DEPLOY_DIR / "stop-bot.ps1").read_text(encoding="ascii")
+        self.assertIn('Win32_Process -Filter "Name=\'chrome.exe\'"', text)
+        self.assertNotIn("Get-CimInstance Win32_Process |", text)
+
+
+class SshPortTests(unittest.TestCase):
+    """Targets like 185.104.195.207:56777 (SSH not on port 22): the port must
+    reach ssh as -p and scp as -P, never be glued onto the host name."""
+
+    def _remote(self, host, calls):
+        def runner(args, **kwargs):
+            calls.append(args)
+            return _completed(0, "ok")
+        return deploy.Remote("Administrator", host, deploy.DEFAULT_CONFIG, runner=runner)
+
+    def test_host_and_port_are_split(self):
+        self.assertEqual(deploy.split_host_port("185.104.195.207:56777"), ("185.104.195.207", 56777))
+        self.assertEqual(deploy.split_host_port("vps.example.com:2222"), ("vps.example.com", 2222))
+
+    def test_a_host_without_a_port_is_left_alone(self):
+        self.assertEqual(deploy.split_host_port("169.58.224.170"), ("169.58.224.170", None))
+
+    def test_an_ipv6_address_is_not_mistaken_for_host_and_port(self):
+        self.assertEqual(deploy.split_host_port("2001:db8::1"), ("2001:db8::1", None))
+
+    def test_a_port_out_of_range_is_rejected(self):
+        for bad in ("1.2.3.4:0", "1.2.3.4:65536", "1.2.3.4:99999"):
+            with self.assertRaises(deploy.ConfigError, msg=bad):
+                deploy.split_host_port(bad)
+
+    def test_targets_keep_their_port_and_user(self):
+        text = "1.1.1.1:56777\nbob@2.2.2.2:2222  # west\n3.3.3.3\n"
+        self.assertEqual(deploy.parse_targets(text, "Administrator"),
+                         [("Administrator", "1.1.1.1:56777"), ("bob", "2.2.2.2:2222"), ("Administrator", "3.3.3.3")])
+
+    def test_a_bad_port_in_the_roster_is_reported_up_front(self):
+        with self.assertRaises(deploy.ConfigError):
+            deploy.parse_targets("1.1.1.1\n2.2.2.2:70000\n", "Administrator")
+
+    def test_ssh_gets_dash_p_and_a_host_without_the_port(self):
+        calls = []
+        self._remote("185.104.195.207:56777", calls).run("echo ok")
+        args = calls[0]
+        self.assertEqual(args[args.index("-p") + 1], "56777")
+        self.assertEqual(args[-2], "Administrator@185.104.195.207")
+        self.assertEqual(args[-1], "echo ok")
+
+    def test_scp_gets_a_capital_dash_p_and_a_host_without_the_port(self):
+        calls = []
+        self._remote("185.104.195.207:56777", calls).copy("local.exe", "C:/bot/x.exe.new")
+        args = calls[0]
+        self.assertEqual(args[args.index("-P") + 1], "56777")
+        self.assertNotIn("-p", args)
+        self.assertEqual(args[-1], "Administrator@185.104.195.207:C:/bot/x.exe.new")
+
+    def test_no_port_means_no_port_flag_at_all(self):
+        calls = []
+        remote = self._remote("169.58.224.170", calls)
+        remote.run("echo ok")
+        remote.copy("local.exe", "C:/bot/x.exe.new")
+        for args in calls:
+            self.assertNotIn("-p", args)
+            self.assertNotIn("-P", args)
+
+    def test_a_whole_update_uses_the_port_on_every_ssh_and_scp_call(self):
+        vps = FakeVps()
+        seen = []
+
+        def spy(args, **kwargs):
+            seen.append(args)
+            return vps(args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            exe = Path(tmp) / "tv-signal-trader.exe"
+            exe.write_bytes(b"admin-bytes")
+            cfg = deploy._merge(deploy.DEFAULT_CONFIG, {"verify_seconds": 0})
+            result = deploy.update_host(
+                ("Administrator", "1.2.3.4:56777"), cfg, {"admin_exe": exe},
+                {"admin_exe": deploy.sha256_of(exe)}, runner=spy, sleep=lambda s: None)
+        self.assertEqual(result.status, "ok", result.detail)
+        self.assertGreater(len(seen), 8)
+        for args in seen:
+            flag = "-P" if args[0] == "scp" else "-p"
+            self.assertEqual(args[args.index(flag) + 1], "56777", args)
+            self.assertNotIn("56777", args[-1] if args[0] == "scp" else args[-2])
+        self.assertEqual(result.host, "1.2.3.4:56777")  # the report still shows what you typed
 
 
 class ParsingTests(unittest.TestCase):

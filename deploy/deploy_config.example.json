@@ -12,6 +12,7 @@
     "env":       { "push": false, "from": "release", "asset": ".env" },
     "accounts":  { "push": false, "from": "release", "asset": "accounts_to_add.txt" }
   },
-  "max_parallel": 5,
-  "verify_seconds": 25
+  "max_parallel": 1,
+  "verify_seconds": 25,
+  "timeouts": { "stop": 300, "command": 90 }
 }
