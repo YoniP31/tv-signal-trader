@@ -3,6 +3,7 @@ import signal
 import sys
 import time
 
+from . import activation
 from . import browser
 from . import config
 from . import humanize
@@ -581,13 +582,30 @@ def _run_add_accounts(driver, tv_tab, hide_tg_window=None):
               f"failed {failed}, out of {len(names)} total.")
 
 
-def main():
-    setup_wizard.ensure_configured()
+def _pause_before_exit():
+    """Keeps a double-clicked .exe's console window open long enough to read
+    why it is exiting."""
+    try:
+        input("\nPress Enter to close...")
+    except EOFError:
+        pass
 
+
+def main():
     # Consumed exactly once, by the first pass through the '>' loop below --
     # after that (including after a trading loop gives up and returns), it's
     # back to a normal interactive prompt.
     pending_startup_command = _startup_command(sys.argv)
+
+    # First of all, before anything is configured or the browser opens: the
+    # one-time activation password (see activation.py). Nobody can type it
+    # into an auto-started run, which just exits with a message instead.
+    if not activation.ensure_activated(interactive=pending_startup_command is None):
+        if pending_startup_command is None:
+            _pause_before_exit()
+        sys.exit(1)
+
+    setup_wizard.ensure_configured()
 
     driver = browser.create_driver()
     tv_tab = driver.current_window_handle

@@ -24,6 +24,17 @@ The task deliberately runs **non-elevated**: Chrome exits immediately
 ("session not created: Chrome instance exited") when the bot is launched
 elevated.
 
+**Activation, once per machine.** A built `.exe` asks for the one-time
+activation password the first time it runs on a computer (see "The one-time
+activation password" in the main README). The Scheduled Task starts it with
+nobody there to type, so on a machine that hasn't been activated yet it just
+prints why and exits -- a deploy would report `verify_failed`. So before
+relying on a new machine's task, double-click the `.exe` once over RDP (not
+from an elevated PowerShell, for the same Chrome reason as above), enter the
+password, then close it. That is the only time it is asked: the marker lives in
+the user's home folder, so later updates -- including into a new versioned
+folder -- never ask again.
+
 ## Each update
 
     cp deploy/deploy_config.example.json deploy/deploy_config.json   # once

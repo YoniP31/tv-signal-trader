@@ -23,6 +23,10 @@ trading-backup-*.json
 *.dist/
 nuitka-crash-report.xml
 
+# One-time activation password hash, written by tools/make_password_hash.py
+# before a build (this repo is public, so it must never be committed)
+/tv_signal_trader/_activation_secret.py
+
 # Python
 __pycache__/
 *.pyc

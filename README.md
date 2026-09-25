@@ -186,7 +186,7 @@ The build produces one of two variants, controlled by `config.IS_ADMIN_BUILD`:
 
 The variant is baked into the `.exe` at compile time, not read from an environment variable at runtime — so it can't be changed by whoever ends up running it. [build.ps1](build.ps1) does this by overwriting [tv_signal_trader/_build_variant.py](tv_signal_trader/_build_variant.py)'s `BUILD_VARIANT` literal right before invoking Nuitka, then restoring it back to `"admin"` afterward (so the working tree is left clean either way, and running from source is always the admin build). If a build gets interrupted before that restore runs, `git checkout -- tv_signal_trader/_build_variant.py` puts it back.
 
-1. `pip install -r requirements-build.txt`
+1. `pip install -r requirements-build.txt`, then set the activation password (see "The one-time activation password" below): `python tools/make_password_hash.py`. A build made without it refuses to run.
 2. Run [build.ps1](build.ps1) (or the `nuitka` command inside it directly):
    - `.\build.ps1` — admin build, output `dist/tv-signal-trader.exe`.
    - `.\build.ps1 -Variant user` — regular-user build, output `dist/tv-signal-trader-user.exe`.
@@ -195,6 +195,16 @@ The variant is baked into the `.exe` at compile time, not read from an environme
 3. Hand the recipient just that one `.exe` — they'll get the same first-run setup wizard prompting for their own TradingGenerator credentials, and Selenium Manager still fetches chromedriver on their machine automatically.
 4. If Nuitka builds with MSVC (`cl.exe`) rather than MinGW64, it can't statically link the Windows C runtime, so recipients without it already installed will need the [Visual C++ Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe) — a small, extremely common one-time install.
 5. Don't commit `dist/` or the `.exe` into git — publish built binaries as [GitHub Releases](https://docs.github.com/en/repositories/releasing-projects-on-github) assets instead, so the repo itself doesn't accumulate large binary blobs. Attach a copy of [docs/.env](docs/.env) alongside it (already a committed template with credentials blanked out, listing every configurable field) so recipients who skip the setup wizard's prompts still see what keys exist, and (admin build only) a copy of [docs/accounts_to_add.txt](docs/accounts_to_add.txt) for the `add_accounts` command — see [v0.2.0](https://github.com/YoniP31/tv-signal-trader/releases/tag/v0.2.0) for an earlier example.
+
+### The one-time activation password
+
+Both built `.exe` variants ask for an activation password the first time they run on a computer, and never again on that computer. Running from source skips it.
+
+- **Setting it:** `python tools/make_password_hash.py` asks you for the password (plain visible input, twice) and writes only its salted, slow hash (PBKDF2-SHA256, 600,000 iterations) to `tv_signal_trader/_activation_secret.py`. That file is gitignored, since this repo is public — it exists only on the machine that builds, and Nuitka bundles it into the `.exe`. The password itself is never printed, logged or saved anywhere (not `.env`, not `app.log`, not `status.json`). A build made without running the tool refuses to start, instead of silently shipping ungated.
+- **Activating:** on an unactivated computer the terminal prompts `Activation password:` (visible typing; 5 attempts, then it exits). One correct entry writes a small marker file, `~/.tv_signal_trader_activation`, in the user's home folder — deliberately not next to the `.exe`, so updates and new versioned install folders (`tv-signal-trader-v1.2.0`) never ask again. The marker is an HMAC over that computer's Windows machine ID, `ACTIVATION_GENERATION` and the password hash, so copying it to another computer doesn't activate that one.
+- **Asking everyone again:** changing the password (running the tool again and rebuilding) invalidates every existing marker by itself. To re-ask with the *same* password, bump `ACTIVATION_GENERATION` in [activation.py](tv_signal_trader/activation.py). It is deliberately not the release number — that would re-ask on every update.
+- **Unattended starts:** an auto-started run (`tv-signal-trader.exe web_multi`, e.g. the deploy Scheduled Task) has nobody to type the password, so on an unactivated computer it prints why and exits. Run the `.exe` once by hand and enter the password on each new machine before relying on its task; deploys to already-activated machines are unaffected.
+- **What it is and isn't:** a deterrent, like the rest of the `.exe` protection. Anyone holding the `.exe` can attack the hash offline (use a long random password) or patch the check out of the binary.
 
 ## Known limitations / things to watch out for
 
