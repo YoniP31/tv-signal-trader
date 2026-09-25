@@ -65,6 +65,14 @@ def _startup_command(argv):
     return None
 
 
+def _console_suppressed_for_this_build():
+    """True only for the regular-user build with
+    config.SUPPRESS_CONSOLE_IN_USER_BUILD switched on (it's off by default,
+    so the user build prints everything the admin build does). The admin
+    build is never suppressed. app.log is complete either way."""
+    return (not config.IS_ADMIN_BUILD) and config.SUPPRESS_CONSOLE_IN_USER_BUILD
+
+
 def _ask_hide_tg_window():
     # Lets the user override config.HIDE_TRADINGGENERATOR_WINDOW for
     # just this run, without editing config.py. Only takes effect if
@@ -620,14 +628,14 @@ def main():
     signal.signal(signal.SIGINT, _handle_sigint)
 
     def _run_trading_loop(**kwargs):
-        # The regular-user build's web/web_multi runs silently -- see
-        # logging_utils.suppressed -- until there's something more
-        # deliberately built to show instead of raw console output.
-        if config.IS_ADMIN_BUILD:
-            multi_signal_source.run_web_loop_multi(driver, **kwargs)
-        else:
+        # Full console output in both builds by default; see
+        # _console_suppressed_for_this_build for the toggle that restores
+        # the regular-user build's original silent web/web_multi.
+        if _console_suppressed_for_this_build():
             with logging_utils.suppressed():
                 multi_signal_source.run_web_loop_multi(driver, **kwargs)
+        else:
+            multi_signal_source.run_web_loop_multi(driver, **kwargs)
 
     def _relaunch_browser():
         # Full relaunch: force-kill the current browser and bring up a

@@ -126,7 +126,7 @@ Running the script drops you into a `>` prompt that accepts:
 | `setup`      | Re-run setup to change your TradingGenerator credentials or Tradovate accounts |
 | `quit`       | Closes the browser and exits                                         |
 
-The regular-user `.exe` variant (see "Building a standalone .exe" below) only offers `web`/`web_multi`/`setup`/`quit` — no `test`/`add_accounts` commands, TradingGenerator's window is always hidden with no prompt, and `web`/`web_multi` produce no console output.
+The regular-user `.exe` variant (see "Building a standalone .exe" below) only offers `web`/`web_multi`/`setup`/`quit` — no `test`/`add_accounts` commands, TradingGenerator's window is always hidden with no prompt. Its `web`/`web_multi` print the same full console output as the admin build (`config.SUPPRESS_CONSOLE_IN_USER_BUILD = False`; set it to `True` in code before building to restore the original silent run).
 
 **Starting a command automatically.** `tv-signal-trader.exe web_multi` (or `web`) runs that command immediately at launch instead of waiting at the `>` prompt — for unattended launchers like a Scheduled Task that need the bot fully running again after an update or reboot with nobody there to type it (see `deploy/setup_vps.ps1`). The admin build skips its usual "show the TradingGenerator window?" question in this mode and uses the `config.py` default (hidden). Only `web`/`web_multi` are accepted — the interactive commands (`test`, `add_accounts`, `setup`) never auto-run — and once the trading loop gives up (see the auto-restart safety net), it falls back to the normal `>` prompt.
 
@@ -182,7 +182,7 @@ For sharing this with a few trusted people without handing them the source, [Nui
 The build produces one of two variants, controlled by `config.IS_ADMIN_BUILD`:
 
 - **admin** (default) — full feature set, unchanged from the app's original behavior: all commands including `test`, asked whether to show/hide the TradingGenerator window, normal console output.
-- **user** — restricted: only `web`/`web_multi`/`setup`/`quit` (no `test` submenu), TradingGenerator's window is always hidden with no prompt, and `web`/`web_multi` produce no console output at all (silenced via `logging_utils.suppressed()` — a placeholder until something more deliberate replaces it).
+- **user** — restricted: only `web`/`web_multi`/`setup`/`quit` (no `test` submenu), TradingGenerator's window is always hidden with no prompt, and `web`/`web_multi` print the same full console output as the admin build by default. The original silent behavior (via `logging_utils.suppressed()`) is one hard toggle away: set `config.SUPPRESS_CONSOLE_IN_USER_BUILD = True` before building.
 
 The variant is baked into the `.exe` at compile time, not read from an environment variable at runtime — so it can't be changed by whoever ends up running it. [build.ps1](build.ps1) does this by overwriting [tv_signal_trader/_build_variant.py](tv_signal_trader/_build_variant.py)'s `BUILD_VARIANT` literal right before invoking Nuitka, then restoring it back to `"admin"` afterward (so the working tree is left clean either way, and running from source is always the admin build). If a build gets interrupted before that restore runs, `git checkout -- tv_signal_trader/_build_variant.py` puts it back.
 

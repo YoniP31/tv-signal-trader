@@ -20,6 +20,14 @@ except NameError:
 from ._build_variant import BUILD_VARIANT  # noqa: E402
 IS_ADMIN_BUILD = BUILD_VARIANT == "admin"
 
+# Whether the regular-user build's web/web_multi runs silently (no console
+# output at all -- see logging_utils.suppressed) as opposed to printing
+# everything the admin build does. False (default): full console output
+# in both builds. True: the original silent user build, kept as a
+# maintainer toggle for a rebuild. app.log is complete either way, and the
+# admin build never suppresses anything regardless of this value.
+SUPPRESS_CONSOLE_IN_USER_BUILD = False
+
 if _RUNNING_COMPILED:
     # Nuitka --onefile extracts to a fresh temp dir every run, so __file__
     # is useless for anything that needs to persist (.env, status.json).
