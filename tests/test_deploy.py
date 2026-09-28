@@ -14,6 +14,7 @@ import sys
 import tempfile
 import unittest
 import zipfile
+from contextlib import redirect_stdout
 from pathlib import Path
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -41,13 +42,17 @@ class FakeVps:
     def __init__(self, task_exe="tv-signal-trader.exe", reachable=True, has_task=True, stop_works=True,
                  scp_ok=True, hash_ok=True, start_works=True, stays_up=True, scp_times_out=False,
                  task_dir=DEFAULT_TASK_DIR, stop_hangs=False, stop_kills_first=True,
-                 tasklist_timeouts=0, run_task_raises=False, stop_output=""):
+                 tasklist_timeouts=0, run_task_raises=False, stop_output="",
+                 setup_works=True, setup_output="", setup_raises=False):
         # stop_hangs: stop-bot.ps1 never returns (the ssh times out); stop_kills_first: ...but had
         # already killed the bot by then. tasklist_timeouts: how many tasklist calls time out
         # before it answers. run_task_raises: `schtasks /run` blows up with an unexpected error.
+        # setup_works/setup_output/setup_raises: the outcome of running setup_vps.ps1 (--run-setup).
         self.stop_hangs, self.stop_kills_first = stop_hangs, stop_kills_first
         self.tasklist_timeouts, self.run_task_raises = tasklist_timeouts, run_task_raises
         self.stop_output = stop_output
+        self.setup_works, self.setup_output, self.setup_raises = setup_works, setup_output, setup_raises
+        self.setup_ran = False
         self.timeouts = []  # (command, timeout) for every ssh call
         self.task_exe, self.reachable, self.has_task = task_exe, reachable, has_task
         self.task_dir = task_dir  # None -> the task's command is a bare file name, no folder
@@ -80,6 +85,11 @@ class FakeVps:
                 return _completed(1, stderr="ERROR: The system cannot find the file specified.")
             command = f"{self.task_dir}\\{self.task_exe}" if self.task_dir else self.task_exe
             return _completed(0, f"<Task><Actions><Exec><Command>{command}</Command></Exec></Actions></Task>")
+        if command.startswith("powershell") and "setup_vps.ps1" in command:
+            self.setup_ran = True
+            if self.setup_raises:
+                raise OSError("connection reset")
+            return _completed(0 if self.setup_works else 1, self.setup_output)
         if command.startswith("powershell") and "stop-bot.ps1" in command:
             if self.stop_hangs:
                 if self.stop_kills_first:
@@ -116,16 +126,18 @@ class UpdateHostTests(unittest.TestCase):
         self.cfg = deploy._merge(deploy.DEFAULT_CONFIG, {"verify_seconds": 0})
         self.paths = {}
         for key, content in {"admin_exe": b"admin-bytes", "user_exe": b"user-bytes",
-                             "env": b"KEY=value\n", "accounts": b"ACC1\n"}.items():
+                             "env": b"KEY=value\n", "accounts": b"ACC1\n",
+                             "watchdog": b"# a watchdog script\n"}.items():
             p = self.dir / deploy.REMOTE_FILENAMES[key]
             p.write_bytes(content)
             self.paths[key] = p
         self.hashes = {k: deploy.sha256_of(p) for k, p in self.paths.items()}
 
-    def _run(self, vps, keys, dry_run=False):
+    def _run(self, vps, keys, dry_run=False, run_setup=False, setup_script=deploy.SETUP_SCRIPT):
         return deploy.update_host(
             ("Administrator", "1.2.3.4"), self.cfg, {k: self.paths[k] for k in keys},
-            {k: self.hashes[k] for k in keys}, dry_run=dry_run, runner=vps, sleep=lambda s: None,
+            {k: self.hashes[k] for k in keys}, dry_run=dry_run, run_setup=run_setup,
+            runner=vps, sleep=lambda s: None, setup_script=setup_script,
         )
 
     def _order(self, vps, *needles):
@@ -341,6 +353,91 @@ class UpdateHostTests(unittest.TestCase):
             self.assertFalse(any(mutating in c for c in vps.ssh_commands()), mutating)
         self.assertTrue(vps.running)
 
+    # --- --run-setup: registering/refreshing setup_vps.ps1 remotely ---
+
+    def test_run_setup_is_off_by_default(self):
+        vps = FakeVps()
+        result = self._run(vps, ["admin_exe"])
+        self.assertEqual(result.status, "ok", result.detail)
+        self.assertFalse(vps.setup_ran)
+        self.assertFalse(any(c[0] == "scp" and c[2].endswith("setup_vps.ps1.new") for c in vps.calls))
+
+    def test_run_setup_uploads_verifies_moves_then_runs_it_after_everything_else(self):
+        vps = FakeVps()
+        result = self._run(vps, ["admin_exe"], run_setup=True)
+        self.assertEqual(result.status, "ok", result.detail)
+        self.assertTrue(vps.setup_ran)
+        upload = next(c for c in vps.calls if c[0] == "scp" and c[2].endswith("setup_vps.ps1.new"))
+        self.assertEqual(upload[1], str(deploy.SETUP_SCRIPT))
+        run_needle = f'-File "{FakeVps.DEFAULT_TASK_DIR}\\setup_vps.ps1"'  # distinct from stop-bot.ps1's own -File call
+        restart_i, verify_i, upload_i, hash_i, move_i, run_i = self._order(
+            vps, "schtasks /run", "tasklist", "setup_vps.ps1.new", 'setup_vps.ps1.new" SHA256',
+            'setup_vps.ps1.new" "', run_needle)
+        self.assertLess(restart_i, upload_i, "the bot's own restart must happen first")
+        self.assertLess(upload_i, hash_i)
+        self.assertLess(hash_i, move_i)
+        self.assertLess(move_i, run_i)
+
+    def test_run_setup_also_runs_when_pushing_only_the_watchdog_needs_no_restart(self):
+        # The exact scenario this was built for: adding the watchdog to an
+        # already-running fleet without touching the bot itself.
+        vps = FakeVps()
+        result = self._run(vps, ["watchdog"], run_setup=True)
+        self.assertEqual(result.status, "ok_no_restart", result.detail)
+        self.assertTrue(vps.setup_ran)
+        self.assertFalse(any("stop-bot.ps1" in c for c in vps.ssh_commands()))
+        self.assertTrue(vps.running, "the already-running bot must never be touched")
+        installed = next(c for c in vps.ssh_commands() if c.startswith("move /Y") and "watchdog.ps1.new" in c)
+        self.assertIn("watchdog.ps1\"", installed)
+
+    def test_pushing_only_the_watchdog_never_requires_a_restart(self):
+        vps = FakeVps()
+        self.assertEqual(self._run(vps, ["watchdog"]).status, "ok_no_restart")
+        self.assertFalse(any("schtasks /run" in c for c in vps.ssh_commands()))
+
+    def test_a_failed_setup_script_is_reported_distinctly_from_the_bot_being_down(self):
+        vps = FakeVps(setup_works=False, setup_output="Run this from an elevated PowerShell.")
+        result = self._run(vps, ["watchdog"], run_setup=True)
+        self.assertEqual(result.status, "setup_failed")
+        self.assertIn("elevated", result.detail)
+        self.assertTrue(vps.running, "a setup failure must not be confused with the bot being down")
+
+    def test_setup_is_never_attempted_if_copying_files_already_failed(self):
+        vps = FakeVps(scp_ok=False)
+        result = self._run(vps, ["admin_exe"], run_setup=True)
+        self.assertEqual(result.status, "copy_failed")
+        self.assertFalse(vps.setup_ran)
+
+    def test_a_dry_run_mentions_setup_but_runs_nothing(self):
+        vps = FakeVps()
+        result = self._run(vps, ["watchdog"], dry_run=True, run_setup=True)
+        self.assertEqual(result.status, "dry_run")
+        self.assertIn("setup_vps.ps1", result.detail)
+        self.assertFalse(vps.setup_ran)
+        self.assertFalse(any(c[0] == "scp" for c in vps.calls))
+
+    def test_a_missing_local_setup_script_is_a_real_failure_not_a_silent_skip(self):
+        # Unlike stop-bot.ps1's best-effort refresh, this was explicitly asked
+        # for -- silently skipping it would look like success.
+        vps = FakeVps()
+        result = self._run(vps, ["watchdog"], run_setup=True, setup_script=self.dir / "does-not-exist.ps1")
+        self.assertEqual(result.status, "setup_failed")
+        self.assertIn("no local setup_vps.ps1", result.detail)
+
+    def test_running_setup_uses_its_own_configured_timeout(self):
+        vps = FakeVps()
+        cfg = deploy._merge(self.cfg, {"timeouts": {"setup": 222}})
+        deploy.update_host(("Administrator", "1.2.3.4"), cfg, {"watchdog": self.paths["watchdog"]},
+                            {"watchdog": self.hashes["watchdog"]}, run_setup=True, runner=vps, sleep=lambda s: None)
+        run_call = next(t for c, t in vps.timeouts if c.startswith("powershell") and "setup_vps.ps1" in c)
+        self.assertEqual(run_call, 222)
+
+    def test_an_unexpected_error_running_setup_is_caught_not_propagated(self):
+        vps = FakeVps(setup_raises=True)
+        result = self._run(vps, ["watchdog"], run_setup=True)
+        self.assertEqual(result.status, "setup_failed")
+        self.assertIn("OSError", result.detail)
+
     # --- failures after the bot is stopped: never leave it down ---
 
     def test_a_hash_mismatch_never_installs_the_file_but_still_restarts_the_bot(self):
@@ -398,7 +495,7 @@ class StopScriptTests(unittest.TestCase):
 
     def test_the_powershell_scripts_are_pure_ascii(self):
         # Windows PowerShell 5.1 can misread other characters in a file with no BOM.
-        for name in ("stop-bot.ps1", "setup_vps.ps1"):
+        for name in ("stop-bot.ps1", "setup_vps.ps1", "watchdog.ps1"):
             (self.DEPLOY_DIR / name).read_bytes().decode("ascii")
 
     def test_the_stop_script_reports_failure_when_anything_survives(self):
@@ -411,6 +508,88 @@ class StopScriptTests(unittest.TestCase):
         text = (self.DEPLOY_DIR / "stop-bot.ps1").read_text(encoding="ascii")
         self.assertIn('Win32_Process -Filter "Name=\'chrome.exe\'"', text)
         self.assertNotIn("Get-CimInstance Win32_Process |", text)
+
+
+class WatchdogScriptTests(unittest.TestCase):
+    """deploy/watchdog.ps1 -- runs on a Scheduled Task (see setup_vps.ps1's
+    watchdog task) to restart the bot if it isn't running. Static checks
+    only; the real behavior (detecting a running/crashed process, cleaning
+    up, restarting a real Scheduled Task, every log line) was verified live
+    against real Windows processes and a real throwaway Scheduled Task --
+    not something this Python suite can exercise portably."""
+
+    DEPLOY_DIR = Path(__file__).resolve().parent.parent / "deploy"
+
+    def _text(self):
+        return (self.DEPLOY_DIR / "watchdog.ps1").read_text(encoding="ascii")
+
+    def test_it_reads_the_exe_from_the_bot_task_rather_than_hardcoding_it(self):
+        text = self._text()
+        self.assertIn("Get-TaskExeName", text)
+        self.assertNotIn('"tv-signal-trader.exe"', text)  # never a fixed name, admin or user build
+
+    def test_it_cleans_up_before_restarting(self):
+        text = self._text()
+        self.assertIn("stop-bot.ps1", text)
+        stop_call_index = text.index("stop-bot.ps1")
+        start_task_index = text.index("Start-ScheduledTask")
+        self.assertLess(stop_call_index, start_task_index, "cleanup must happen before the restart")
+
+    def test_a_missing_stop_bot_script_does_not_block_restarting(self):
+        text = self._text()
+        self.assertIn("Test-Path $stopScript", text)
+
+    def test_it_logs_to_its_own_dedicated_file_next_to_itself(self):
+        text = self._text()
+        self.assertIn('$LogPath = Join-Path $InstallDir "watchdog.log"', text)
+        self.assertIn("$InstallDir = $PSScriptRoot", text)
+
+    def test_it_verifies_the_restart_actually_worked_rather_than_assuming_it_did(self):
+        text = self._text()
+        # Must re-check with Test-ProcessRunning after Start-ScheduledTask, not just log success.
+        start_index = text.index("Start-ScheduledTask -TaskName $TaskName")
+        after = text[start_index:]
+        self.assertIn("Test-ProcessRunning", after)
+
+    def test_it_fails_fast_on_an_unexpected_error(self):
+        text = self._text()
+        self.assertIn('$ErrorActionPreference = "Stop"', text)
+        self.assertIn("try {", text)
+        self.assertIn("} catch {", text)
+
+    def test_native_commands_never_redirect_stderr_while_erroractionpreference_is_stop(self):
+        # Regression test: with $ErrorActionPreference = "Stop" in scope, a
+        # redirected native-command stderr line (even "2>$null") is escalated
+        # into a terminating exception instead of just being suppressed text
+        # -- caught live here: schtasks reporting a genuinely missing task
+        # ("ERROR: The system cannot find the file specified.") crashed into
+        # the catch block instead of being treated as an ordinary not-found.
+        text = self._text()
+        for native_call in ("schtasks /query", "tasklist /fi"):
+            line = next(l for l in text.splitlines() if native_call in l)
+            self.assertNotIn("2>", line, f"{native_call!r} line redirects stderr: {line!r}")
+
+    def test_setup_vps_registers_the_watchdog_as_a_separate_task_from_the_bot(self):
+        setup = (self.DEPLOY_DIR / "setup_vps.ps1").read_text(encoding="ascii")
+        self.assertIn('$WatchdogTaskName', setup)
+        self.assertIn("watchdog.ps1", setup)
+        self.assertNotIn('$WatchdogTaskName     = "TVSignalTrader"', setup)  # must not collide with the bot's own task name
+
+    def test_setup_vps_runs_the_watchdog_task_as_system_not_the_interactive_user(self):
+        # Unlike the bot's own task (which must run in an interactive session
+        # to drive a visible Chrome window), the watchdog only observes/kills
+        # processes and triggers that task -- SYSTEM doesn't depend on anyone
+        # being logged in just for the watchdog itself to fire.
+        setup = (self.DEPLOY_DIR / "setup_vps.ps1").read_text(encoding="ascii")
+        watchdog_section = setup[setup.index("Scheduled Task '$WatchdogTaskName'"):]
+        self.assertIn('-UserId "SYSTEM"', watchdog_section)
+
+    def test_setup_vps_does_not_throw_when_watchdog_ps1_has_not_been_extracted_yet(self):
+        setup = (self.DEPLOY_DIR / "setup_vps.ps1").read_text(encoding="ascii")
+        watchdog_section = setup[setup.index("Scheduled Task '$WatchdogTaskName'"):setup.index("# 7. Verify")]
+        self.assertIn("Test-Path $watchdogScriptPath", watchdog_section)
+        self.assertIn("Write-Warn2", watchdog_section)
+        self.assertNotIn("throw", watchdog_section)
 
 
 class SshPortTests(unittest.TestCase):
@@ -586,6 +765,28 @@ class ConfigTests(unittest.TestCase):
     def test_an_override_naming_an_undefined_file_is_rejected(self):
         with self.assertRaises(deploy.ConfigError):
             deploy.selected_files({"files": {"admin_exe": {"push": True}}}, "env")
+
+    def test_watchdog_is_a_valid_file_key(self):
+        cfg = deploy.load_config(self._write({
+            "files": {"watchdog": {"push": True, "from": "local", "path": "deploy/watchdog.ps1"}},
+        }))
+        self.assertEqual(deploy.selected_files(cfg), ["watchdog"])
+
+
+class PrintPlanTests(unittest.TestCase):
+    def _plan(self, run_setup=False):
+        cfg = {"files": {"watchdog": {"from": "local"}}, "release": {"tag": "latest"}}
+        out = io.StringIO()
+        with redirect_stdout(out):
+            deploy._print_plan(cfg, ["watchdog"], {"watchdog": Path("deploy/watchdog.ps1")},
+                                {"watchdog": "a" * 64}, [("Administrator", "1.2.3.4")], False, run_setup)
+        return out.getvalue()
+
+    def test_run_setup_is_mentioned_when_requested(self):
+        self.assertIn("--run-setup", self._plan(run_setup=True))
+
+    def test_run_setup_is_not_mentioned_otherwise(self):
+        self.assertNotIn("run-setup", self._plan(run_setup=False))
 
 
 class SourceTests(unittest.TestCase):

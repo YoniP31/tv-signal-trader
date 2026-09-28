@@ -9,6 +9,7 @@ server, the deploy key, the TVSignalTrader Scheduled Task, stop-bot.ps1).
     python deploy/deploy.py                                 # per deploy_config.json
     python deploy/deploy.py --host 169.58.224.170           # one machine, ignoring the roster
     python deploy/deploy.py --push admin_exe,user_exe       # override which files this run pushes
+    python deploy/deploy.py --push watchdog --run-setup     # add the watchdog to an existing fleet
 
 Per machine, in order:
   1. reachability check                          -> unreachable
@@ -28,6 +29,12 @@ Per machine, in order:
   6. start the task (even after a copy failure: the old files are still intact,
      so the machine is never left down)                  -> restart_failed
   7. wait, then confirm the process is actually running  -> verify_failed
+  8. with --run-setup: upload setup_vps.ps1 and run it there, registering/
+     refreshing the bot's task and the watchdog's -- only attempted once the
+     machine is otherwise in a good state              -> setup_failed
+     Safe on an already-set-up machine: setup_vps.ps1 reuses whatever exe/
+     command the existing task already runs rather than a fixed default, so
+     this can't silently repoint a machine at the wrong build.
 
 Files come from wherever deploy_config.json says, per file: a local path
 (e.g. a fresh dist/ build) or a GitHub release (a loose asset, or unpacked
@@ -61,6 +68,7 @@ REMOTE_FILENAMES = {
     "user_exe": "tv-signal-trader-user.exe",
     "env": ".env",
     "accounts": "accounts_to_add.txt",
+    "watchdog": "watchdog.ps1",
 }
 EXE_KEYS = ("admin_exe", "user_exe")
 
@@ -77,12 +85,17 @@ DEFAULT_CONFIG = {
     # Seconds to wait for a command on a VPS. These machines can be badly
     # slowed by the bot's own Chrome, so a short wait reads as a failure on a
     # perfectly healthy machine. "stop" is for stop-bot.ps1; "command" is for
-    # every other quick command (tasklist, schtasks, move, ...).
-    "timeouts": {"stop": 300, "command": 90},
+    # every other quick command (tasklist, schtasks, move, ...); "setup" is
+    # for running setup_vps.ps1 (--run-setup), which does a few more things
+    # (services, firewall, two Scheduled Tasks) than a single quick command.
+    "timeouts": {"stop": 300, "command": 90, "setup": 180},
 }
 
 # The stop script that gets refreshed on each VPS before every stop.
 STOP_SCRIPT = DEPLOY_DIR / "stop-bot.ps1"
+
+# Uploaded and run on request (--run-setup) after everything else succeeds.
+SETUP_SCRIPT = DEPLOY_DIR / "setup_vps.ps1"
 
 OK_STATUSES = ("ok", "ok_no_restart", "dry_run")
 
@@ -436,8 +449,47 @@ def bring_back(remote, task, exe_name, cfg, sleep, note):
         return f"COULD NOT CHECK OR RESTART THE BOT ({type(exc).__name__}) - check this machine"
 
 
-def update_host(target, cfg, files, hashes, dry_run=False,
-                runner=subprocess.run, sleep=time.sleep, log=None, stop_script=STOP_SCRIPT):
+def run_remote_setup(remote, script_path, install_win, install_posix, timeouts, note):
+    """Uploads the current setup_vps.ps1 to the machine (same hash-verified
+    care as any other file) and runs it there -- registers/refreshes the
+    bot's Scheduled Task and the watchdog's. Safe on an already-set-up
+    machine: setup_vps.ps1 reuses whatever exe/command the existing task
+    already runs rather than a fixed default (see its own $ExeName/
+    $StartCommand), so this can't silently repoint a working machine at the
+    wrong build -- it only needs $ExeName/$StartCommand set by hand for a
+    genuinely first-time setup, same as running it directly would.
+
+    Returns None on success, otherwise a sentence saying what went wrong.
+    Never raises."""
+    if not script_path or not Path(script_path).exists():
+        return "no local setup_vps.ps1 to upload"
+    staged, final = f"{install_win}\\setup_vps.ps1.new", f"{install_win}\\setup_vps.ps1"
+    quick = timeouts["command"]
+    try:
+        r = remote.copy(script_path, f"{install_posix}/setup_vps.ps1.new", timeout=quick)
+        if r.returncode != 0:
+            return f"could not upload setup_vps.ps1: {_tail(r.stderr)}"
+        r = remote.run(f'certutil -hashfile "{staged}" SHA256', timeout=quick)
+        if parse_certutil_hash(r.stdout) != sha256_of(script_path):
+            remote.run(f'del /Q "{staged}"', timeout=quick)
+            return "setup_vps.ps1 failed its SHA-256 check after upload"
+        r = remote.run(f'move /Y "{staged}" "{final}"', timeout=quick)
+        if r.returncode != 0:
+            return f"could not move setup_vps.ps1 into place: {_tail(r.stderr or r.stdout)}"
+        note("running setup_vps.ps1")
+        r = remote.run(f'powershell -NoProfile -ExecutionPolicy Bypass -File "{final}"', timeout=timeouts["setup"])
+        if r.returncode != 0:
+            return _tail(r.stdout or r.stderr) or f"setup_vps.ps1 failed (exit {r.returncode})"
+        return None
+    except subprocess.TimeoutExpired:
+        return f"setup_vps.ps1 did not finish within {timeouts['setup']}s"
+    except Exception as exc:
+        return f"{type(exc).__name__} while running setup_vps.ps1: {exc}"
+
+
+def update_host(target, cfg, files, hashes, dry_run=False, run_setup=False,
+                runner=subprocess.run, sleep=time.sleep, log=None,
+                stop_script=STOP_SCRIPT, setup_script=SETUP_SCRIPT):
     """Runs the whole update for one VPS. `files` is {file key: local Path};
     `hashes` is {file key: sha256}. Never raises for an ordinary failure --
     returns a HostResult whose status says what happened."""
@@ -454,6 +506,16 @@ def update_host(target, cfg, files, hashes, dry_run=False,
         result.status, result.detail = status, detail
         result.seconds = time.monotonic() - started
         return result
+
+    def finish_ok(status):
+        # Only reached once everything else already succeeded -- see the
+        # two call sites below. A failure here is reported on its own
+        # (setup_failed), distinct from the bot itself being fine.
+        if run_setup:
+            setup_error = run_remote_setup(remote, setup_script, install_win, install_posix, cfg["timeouts"], note)
+            if setup_error:
+                return finish("setup_failed", setup_error)
+        return finish(status)
 
     remote = Remote(user, host, cfg, runner=runner)
     task = cfg["remote"]["task_name"]
@@ -486,8 +548,10 @@ def update_host(target, cfg, files, hashes, dry_run=False,
              f"{'restart needed' if needs_restart else 'no restart needed'}")
 
         if dry_run:
-            return finish("dry_run", f"would push {sorted(pushed_names)}"
-                                     f"{' and restart' if needs_restart else ' (no restart)'}")
+            plan = f"would push {sorted(pushed_names)}{' and restart' if needs_restart else ' (no restart)'}"
+            if run_setup:
+                plan += " and run setup_vps.ps1"
+            return finish("dry_run", plan)
 
         if needs_restart:
             refresh_stop_script(remote, stop_script, install_win, install_posix, quick, note)
@@ -531,7 +595,7 @@ def update_host(target, cfg, files, hashes, dry_run=False,
                 break
 
         if not needs_restart:
-            return finish("copy_failed", copy_error) if copy_error else finish("ok_no_restart")
+            return finish("copy_failed", copy_error) if copy_error else finish_ok("ok_no_restart")
 
         note("starting the bot")
         try:
@@ -553,7 +617,7 @@ def update_host(target, cfg, files, hashes, dry_run=False,
                           + (f" (also: {copy_error})" if copy_error else ""))
         if copy_error:
             return finish("copy_failed", copy_error + " - the bot was restarted on its previous files")
-        return finish("ok")
+        return finish_ok("ok")
     except subprocess.TimeoutExpired as exc:
         detail = f"timed out: {_tail(str(exc.cmd) if exc.cmd else '')}"
         if bot_touched:  # the bot may already be stopped: never leave it down
@@ -570,12 +634,14 @@ def update_host(target, cfg, files, hashes, dry_run=False,
 # CLI
 # --------------------------------------------------------------------------
 
-def _print_plan(cfg, keys, paths, hashes, targets, dry_run):
+def _print_plan(cfg, keys, paths, hashes, targets, dry_run, run_setup=False):
     print(f"\n{'DRY RUN - ' if dry_run else ''}Deploying to {len(targets)} machine(s):")
     for key in keys:
         spec = cfg["files"][key]
         origin = f"local {paths[key]}" if spec["from"] == "local" else f"release {cfg['release']['tag']} ({paths[key].name})"
         print(f"  {REMOTE_FILENAMES[key]:<28} {hashes[key][:12]}...  <- {origin}")
+    if run_setup:
+        print("  + will upload and run setup_vps.ps1 on each machine afterward (--run-setup)")
     for _user, host in targets[:10]:
         print(f"    -> {_user}@{host}")
     if len(targets) > 10:
@@ -587,9 +653,13 @@ def main(argv=None):
     ap.add_argument("--config", default=str(DEPLOY_DIR / "deploy_config.json"))
     ap.add_argument("--targets", help="roster file, one host or user@host per line (default: config's targets_file)")
     ap.add_argument("--host", action="append", help="deploy to this host only (repeatable); overrides the roster")
-    ap.add_argument("--push", help="comma-separated file keys (admin_exe,user_exe,env,accounts), "
+    ap.add_argument("--push", help="comma-separated file keys (admin_exe,user_exe,env,accounts,watchdog), "
                                    "overriding the config's push flags for this run")
     ap.add_argument("--dry-run", action="store_true", help="check every machine and print the plan; change nothing")
+    ap.add_argument("--run-setup", action="store_true",
+                     help="after updating files, also upload and run setup_vps.ps1 on each machine (registers/"
+                          "refreshes the bot's Scheduled Task and the watchdog's; safe on an already-set-up "
+                          "machine -- see deploy/README.md)")
     ap.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     ap.add_argument("-v", "--verbose", action="store_true", help="print every step as it happens")
     args = ap.parse_args(argv)
@@ -618,7 +688,7 @@ def main(argv=None):
         return 2
 
     hashes = {key: sha256_of(paths[key]) for key in keys}
-    _print_plan(cfg, keys, paths, hashes, targets, args.dry_run)
+    _print_plan(cfg, keys, paths, hashes, targets, args.dry_run, args.run_setup)
 
     if not args.dry_run and not args.yes:
         if "env" in keys:
@@ -638,7 +708,7 @@ def main(argv=None):
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=cfg["max_parallel"]) as pool:
         futures = {pool.submit(update_host, t, cfg, {k: paths[k] for k in keys}, hashes,
-                               args.dry_run, log=log): t for t in targets}
+                               args.dry_run, args.run_setup, log=log): t for t in targets}
         for future in concurrent.futures.as_completed(futures):
             res = future.result()
             results.append(res)

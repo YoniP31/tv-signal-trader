@@ -10,9 +10,10 @@
     "admin_exe": { "push": true,  "from": "local",   "path": "dist/tv-signal-trader.exe" },
     "user_exe":  { "push": false, "from": "local",   "path": "dist/tv-signal-trader-user.exe" },
     "env":       { "push": false, "from": "release", "asset": ".env" },
-    "accounts":  { "push": false, "from": "release", "asset": "accounts_to_add.txt" }
+    "accounts":  { "push": false, "from": "release", "asset": "accounts_to_add.txt" },
+    "watchdog":  { "push": true,  "from": "local",   "path": "deploy/watchdog.ps1" }
   },
   "max_parallel": 1,
   "verify_seconds": 25,
-  "timeouts": { "stop": 300, "command": 90 }
+  "timeouts": { "stop": 300, "command": 90, "setup": 180 }
 }

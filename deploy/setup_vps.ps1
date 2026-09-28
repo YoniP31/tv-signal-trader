@@ -22,8 +22,21 @@ What it does:
      sitting at the '>' prompt). The bot drives a real, visible Chrome
      window, so the task runs in the user's interactive session (at
      logon) -- NOT "whether user is logged on or not", which runs
-     without a real desktop and can't work for this.
-  6. Verifies what it can.
+     without a real desktop and can't work for this. $ExeName/$StartCommand
+     default to empty, meaning "whatever this task already runs" -- read
+     back from the existing task, not re-derived from a fixed default -- so
+     re-running this blindly (e.g. triggered remotely by deploy.py, see
+     --run-setup) never repoints an already-working machine at the wrong
+     exe/command. Only a genuinely first-time setup needs them set by hand.
+  6. Registers a second Scheduled Task that runs watchdog.ps1 (ships in the
+     release zip next to the exe(s), same as stop-bot.ps1's write-once-
+     here-too approach) every few hours: it checks whether the bot is
+     actually running and, if not, cleans up any leftover Chrome/
+     chromedriver first (same risk stop-bot.ps1 guards against) before
+     starting it again. Runs as SYSTEM, since it only needs to observe/kill
+     processes and trigger the bot's own task -- it does not launch Chrome
+     itself, so it isn't subject to the elevation problem in step 5.
+  7. Verifies what it can.
 
 NOTE: keep this file pure ASCII -- Windows PowerShell 5.1 can misread
 other characters in a script file that has no byte-order mark.
@@ -36,10 +49,14 @@ $DeployPublicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKwFpScyGoeSJQTkE4TFkTFV
 $InstallRoot     = "C:\Users\Administrator\Desktop"   # where the bot's folder lives
 $InstallPrefix   = "tv-signal-trader"                 # the folder's name STARTS with this, e.g. tv-signal-trader-v1.1.0
 $InstallDir      = ""                                 # normally leave empty; set an exact folder to skip the search
-$ExeName         = "tv-signal-trader.exe"     # or tv-signal-trader-user.exe
-$StartCommand    = "web_multi"                # or "web" -- whichever you normally type at the '>' prompt
+$ExeName         = ""     # "tv-signal-trader.exe" or "-user.exe" -- leave empty to reuse whatever the
+                          # existing '$TaskName' task already runs (safe to blindly re-run); set it
+                          # explicitly only for a first-time setup on a machine with no such task yet
+$StartCommand    = ""     # "web" or "web_multi" -- same auto-detect-if-empty rule as $ExeName above
 $TaskName        = "TVSignalTrader"
 $RunAsUser       = "$env:COMPUTERNAME\Administrator"
+$WatchdogTaskName     = "TVSignalTraderWatchdog"
+$WatchdogIntervalHours = 4
 # -----------------------------------------------------------------------------
 
 function Write-Step($msg)  { Write-Host "==> $msg" -ForegroundColor Cyan }
@@ -163,6 +180,29 @@ Write-Ok "written to $stopScriptPath"
 
 # 5. Scheduled Task ------------------------------------------------------------
 Write-Step "Scheduled Task '$TaskName'"
+# An empty $ExeName/$StartCommand means "reuse whatever this task already
+# runs" -- read back from the task itself (never re-derived from a fixed
+# default), so re-running this script never silently repoints an existing
+# machine's task at the wrong exe/command, whatever it happens to be.
+$existingBotTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+if ($existingBotTask) {
+    $existingAction = $existingBotTask.Actions | Select-Object -First 1
+    if (-not $ExeName) {
+        $ExeName = Split-Path $existingAction.Execute -Leaf
+        Write-Ok "reusing the exe already configured on this task: $ExeName"
+    }
+    if (-not $StartCommand) {
+        $StartCommand = $existingAction.Arguments
+        Write-Ok "reusing the startup command already configured on this task: $StartCommand"
+    }
+}
+if (-not $ExeName) {
+    throw "No existing '$TaskName' task on this machine, and `$ExeName wasn't set -- edit `$ExeName at the top of this script for a first-time setup here (`"tv-signal-trader.exe`" or `"tv-signal-trader-user.exe`")."
+}
+if (-not $StartCommand) {
+    throw "No existing '$TaskName' task on this machine, and `$StartCommand wasn't set -- edit `$StartCommand at the top of this script for a first-time setup here (`"web`" or `"web_multi`")."
+}
+
 $exePath = Join-Path $InstallDir $ExeName
 if (-not (Test-Path $exePath)) { Write-Warn2 "$exePath does not exist yet - the task will fail to start until it does." }
 
@@ -176,7 +216,7 @@ $settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero)
 # while a normal double-click, which runs non-elevated, works fine.
 $principal = New-ScheduledTaskPrincipal -UserId $RunAsUser -LogonType Interactive -RunLevel Limited
 
-if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+if ($existingBotTask) {
     Set-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal | Out-Null
     Write-Ok "updated in place"
 } else {
@@ -184,11 +224,47 @@ if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
     Write-Ok "created -- does NOT launch anything now; it fires at the next logon of $RunAsUser"
 }
 
-# 6. Verify --------------------------------------------------------------------
+# 6. Watchdog Scheduled Task ----------------------------------------------------
+Write-Step "Scheduled Task '$WatchdogTaskName'"
+$watchdogScriptPath = Join-Path $InstallDir "watchdog.ps1"
+if (-not (Test-Path $watchdogScriptPath)) {
+    Write-Warn2 "$watchdogScriptPath not found - it ships in the release zip next to the exe(s); extract the full zip contents into $InstallDir, then re-run this script to register its task."
+} else {
+    $watchdogAction = New-ScheduledTaskAction -Execute "powershell.exe" `
+        -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$watchdogScriptPath`"" -WorkingDirectory $InstallDir
+    # No -RepetitionDuration: leaving it unset (not the same as [TimeSpan]::Zero
+    # or ::MaxValue, both of which behave oddly here) is what makes the
+    # repetition continue indefinitely rather than stop after some duration.
+    $watchdogTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) `
+        -RepetitionInterval (New-TimeSpan -Hours $WatchdogIntervalHours)
+    $watchdogSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 10) `
+        -MultipleInstances IgnoreNew
+    # SYSTEM/Highest, unlike the bot's own task above: this one only reads/kills
+    # processes and triggers the bot's task -- it never launches Chrome itself,
+    # so it isn't subject to that task's elevation problem, and running as
+    # SYSTEM means it doesn't depend on anyone being logged in just to FIRE
+    # (though it can still only bring the bot back within a session that's
+    # already open -- see watchdog.ps1's own docstring).
+    $watchdogPrincipal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+
+    if (Get-ScheduledTask -TaskName $WatchdogTaskName -ErrorAction SilentlyContinue) {
+        Set-ScheduledTask -TaskName $WatchdogTaskName -Action $watchdogAction -Trigger $watchdogTrigger `
+            -Settings $watchdogSettings -Principal $watchdogPrincipal | Out-Null
+        Write-Ok "updated in place"
+    } else {
+        Register-ScheduledTask -TaskName $WatchdogTaskName -Action $watchdogAction -Trigger $watchdogTrigger `
+            -Settings $watchdogSettings -Principal $watchdogPrincipal | Out-Null
+        Write-Ok "created -- runs every $WatchdogIntervalHours hour(s), starting now"
+    }
+}
+
+# 7. Verify --------------------------------------------------------------------
 Write-Step "Verification"
 if (netstat -an | Select-String ":22\s.*LISTENING") { Write-Ok "sshd is listening on port 22" } else { Write-Warn2 "sshd does NOT appear to be listening" }
 $task = Get-ScheduledTask -TaskName $TaskName
 Write-Ok "task state: $($task.State); runs as $($task.Principal.UserId), logon type $($task.Principal.LogonType)"
+$watchdogTask = Get-ScheduledTask -TaskName $WatchdogTaskName -ErrorAction SilentlyContinue
+if ($watchdogTask) { Write-Ok "watchdog task state: $($watchdogTask.State); runs every $WatchdogIntervalHours hour(s)" }
 Write-Host "    Network profile: $((Get-NetConnectionProfile)[0].NetworkCategory) (the firewall rule now applies regardless)"
 
 Write-Host ""
