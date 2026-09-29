@@ -34,11 +34,41 @@ activation password the first time it runs on a computer (see "The one-time
 activation password" in the main README). The Scheduled Task starts it with
 nobody there to type, so on a machine that hasn't been activated yet it just
 prints why and exits -- a deploy would report `verify_failed`. So before
-relying on a new machine's task, double-click the `.exe` once over RDP (not
-from an elevated PowerShell, for the same Chrome reason as above), enter the
-password, then close it. That is the only time it is asked: the marker lives in
-the user's home folder, so later updates -- including into a new versioned
-folder -- never ask again.
+relying on a new machine's task, either double-click the `.exe` once over RDP
+(not from an elevated PowerShell, for the same Chrome reason as above), enter
+the password, then close it -- or use `activate_remote.py` below to do the
+same thing for a whole fleet from your own machine. That is the only time it
+is asked: the marker lives in the user's home folder, so later updates --
+including into a new versioned folder -- never ask again.
+
+### Activating a fleet remotely
+
+    python deploy/activate_remote.py             # enter the password on every machine in the roster
+    python deploy/activate_remote.py --start      # then start the bot's task on each one too
+    python deploy/activate_remote.py --host 1.2.3.4 --start
+
+Asks for the password once, here, then sends it to each machine over SSH's
+own stdin forwarding -- never as a command-line argument, never written to a
+file on either end, never printed or logged (including in its own JSON
+report in `deploy/reports/`). This is exactly the same thing as typing the
+password at that machine's own console, done from here instead -- it doesn't
+change who needs to know it or where it can leak.
+
+Per machine: runs the exe with no arguments, piping the password to its
+normal prompt. A correct password (or a machine already activated) goes on
+to try opening Chrome, which fails in a plain SSH session -- no real desktop
+is attached here, unlike the Scheduled Task's own interactive-session launch
+-- and the exe exits on its own after its own retry/cleanup logic gives up,
+typically 15-20s. A wrong password fails in well under a second instead
+(there's nothing further to feed it). Either way, `stop-bot.ps1` is refreshed
+and run afterward to clean up that attempt, the same as before any real
+restart. `--start` then starts the bot's Scheduled Task for real, where
+Chrome works normally, and confirms it came up.
+
+Needs live confirmation on one real VPS before trusting it across a fleet --
+the SSH-stdin-forwarding-through-cmd.exe-to-the-exe chain, and the exe's own
+behavior when it can't reach a desktop, aren't things this repo's own test
+suite can exercise without a network.
 
 ### Adding the watchdog to machines set up before it existed
 

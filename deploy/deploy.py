@@ -301,11 +301,21 @@ class Remote:
         self._ssh_port = ["-p", str(self.port)] if self.port else []
         self._scp_port = ["-P", str(self.port)] if self.port else []
 
-    def run(self, command, timeout=60):
-        """`command` runs under cmd.exe on the VPS (Windows OpenSSH's default shell)."""
+    def run(self, command, timeout=60, input_data=None):
+        """`command` runs under cmd.exe on the VPS (Windows OpenSSH's default
+        shell). `input_data`, if given, is sent as the remote command's
+        stdin -- e.g. to answer a prompt the command itself shows, such as
+        activate_remote.py entering the activation password. ssh forwards
+        local stdin through to the remote command by default (BatchMode
+        above only governs ssh's own auth/host-key prompts, not this), so
+        this never puts the data in `command` itself, a file, or a log on
+        either end -- only in this one process's transient input."""
+        kwargs = dict(capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+        if input_data is not None:
+            kwargs["input"] = input_data
         return self.runner(
             ["ssh", *self._opts, *self._ssh_port, f"{self.user}@{self.host}", command],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
+            **kwargs,
         )
 
     def copy(self, local_path, remote_posix_path, timeout=900):
