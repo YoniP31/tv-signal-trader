@@ -25,6 +25,11 @@ class AdCloseSelectorsTests(unittest.TestCase):
         self.assertIn('[data-qa-id="promo-dialog-close-button"]', ads.AD_CLOSE_SELECTORS)
 
 
+class AdModalMarkerSelectorsTests(unittest.TestCase):
+    def test_covers_the_coupon_sale_modals_own_link(self):
+        self.assertIn('a[href*="coupon_popup"]', ads.AD_MODAL_MARKER_SELECTORS)
+
+
 class ScriptsBuiltFromTheSameSelectorListTests(unittest.TestCase):
     """Both scripts are generated from AD_CLOSE_SELECTORS via the same
     _SELECTORS_JSON -- this just confirms every selector actually made it
@@ -42,6 +47,17 @@ class ScriptsBuiltFromTheSameSelectorListTests(unittest.TestCase):
 
     def test_dismiss_once_script_embeds_every_selector(self):
         self.assertIn(ads._SELECTORS_JSON, ads._DISMISS_ONCE_JS)
+
+    def test_watchdog_script_embeds_every_modal_marker(self):
+        self.assertIn(ads._MODAL_MARKERS_JSON, ads.WATCHDOG_SCRIPT)
+        self.assertEqual(json.loads(ads._MODAL_MARKERS_JSON), ads.AD_MODAL_MARKER_SELECTORS)
+
+    def test_dismiss_once_script_embeds_every_modal_marker(self):
+        self.assertIn(ads._MODAL_MARKERS_JSON, ads._DISMISS_ONCE_JS)
+
+    def test_both_scripts_call_the_marked_modal_closer(self):
+        self.assertIn("tvBotCloseMarkedModals()", ads.WATCHDOG_SCRIPT)
+        self.assertIn("tvBotCloseMarkedModals()", ads._DISMISS_ONCE_JS)
 
     def test_watchdog_script_sets_up_a_mutation_observer(self):
         self.assertIn("MutationObserver", ads.WATCHDOG_SCRIPT)

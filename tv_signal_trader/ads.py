@@ -4,14 +4,21 @@ needs to click, which can otherwise leave a click silently swallowed by
 the overlay (Selenium raises ElementClickInterceptedException) or, worse,
 land on whatever's underneath it instead of the intended control.
 
-Two variants confirmed live so far, both handled by the same mechanism:
+Three variants confirmed live so far:
   - A small corner "charting ad" toast (Google Publisher Tag content in
     TradingView's own toast-notification system).
   - A full-screen "Ad blocker detected" upsell dialog, shown instead of
     the toast when an ad blocker is active in this Chrome profile.
+  - A full-screen coupon/sale promo modal (e.g. "Autumn sale"), built on
+    TradingView's generic modal component -- unlike the first two, its
+    close button carries no stable identifier at all, only a hashed
+    build-specific class, so it needs a different mechanism (see
+    AD_MODAL_MARKER_SELECTORS below) from the first two's direct-selector
+    match.
 
-Two complementary mechanisms share AD_CLOSE_SELECTORS below, so a newly
-caught popup type only ever needs one new entry to be handled by both:
+Two complementary mechanisms share AD_CLOSE_SELECTORS/AD_MODAL_MARKER_SELECTORS
+below, so a newly caught popup type only ever needs one new entry to be
+handled by both:
   - browser.create_driver() injects WATCHDOG_SCRIPT once per browser
     session via Page.addScriptToEvaluateOnNewDocument -- a persistent,
     debounced MutationObserver running entirely in the page's own JS,
@@ -51,12 +58,72 @@ AD_CLOSE_SELECTORS = [
     '[data-qa-id="promo-dialog-close-button"]',
 ]
 
+# For a popup whose close button has no such stable identifier at all --
+# only TradingView's generic modal component's hashed classes, shared with
+# real in-app dialogs too (confirmed live: one exists, for closing an open
+# position), so the close button can't just be matched directly the way
+# AD_CLOSE_SELECTORS' entries are without risking clicking a real dialog's
+# close button by mistake.
+#
+# Instead, each entry here matches some OTHER element that's reliably
+# specific to that one promo (its own call-to-action link, tagged with
+# TradingView's own analytics/tracking parameters -- not a build artifact,
+# so this is no more fragile than AD_CLOSE_SELECTORS' own data-* entries).
+# _CLOSE_MARKED_MODALS_JS below walks up from a match to the nearest
+# ancestor that looks like this modal system's outer wrapper (a class
+# token starting with "modal-", tolerant of the hashed suffix) and clicks
+# whichever button *inside that same modal* reads "Close" -- never any
+# button found some other way, so a real dialog sharing the same
+# component is never touched just for looking similar.
+#   - the "Autumn sale" coupon modal's own "Explore offers" link
+AD_MODAL_MARKER_SELECTORS = [
+    'a[href*="coupon_popup"]',
+]
+
 _SELECTORS_JSON = json.dumps(AD_CLOSE_SELECTORS)
+_MODAL_MARKERS_JSON = json.dumps(AD_MODAL_MARKER_SELECTORS)
+
+# A function declaration (not an expression), so it can be dropped
+# verbatim into both _DISMISS_ONCE_JS and WATCHDOG_SCRIPT below and called
+# by name from either. See AD_MODAL_MARKER_SELECTORS above for what this
+# does and why it's a second, different mechanism from AD_CLOSE_SELECTORS'
+# plain "click this selector" one.
+_CLOSE_MARKED_MODALS_JS = f"""
+    function tvBotCloseMarkedModals() {{
+        var markers = {_MODAL_MARKERS_JSON};
+        var closed = 0;
+        for (var m = 0; m < markers.length; m++) {{
+            var found = document.querySelectorAll(markers[m]);
+            for (var f = 0; f < found.length; f++) {{
+                var el = found[f], modal = null;
+                while (el && el !== document.documentElement) {{
+                    var tokens = (el.className && el.className.split) ? el.className.split(/\\s+/) : [];
+                    var isModal = false;
+                    for (var t = 0; t < tokens.length; t++) {{
+                        if (/^modal-/.test(tokens[t])) {{ isModal = true; break; }}
+                    }}
+                    if (isModal) {{ modal = el; break; }}
+                    el = el.parentElement;
+                }}
+                if (!modal) continue;
+                var buttons = modal.querySelectorAll('button');
+                for (var b = 0; b < buttons.length; b++) {{
+                    if (/close/i.test(buttons[b].textContent || '')) {{
+                        try {{ buttons[b].click(); closed++; }} catch (e) {{}}
+                        break;
+                    }}
+                }}
+            }}
+        }}
+        return closed;
+    }}
+"""
 
 # Returns how many close buttons were actually found and clicked (0 if
-# none of AD_CLOSE_SELECTORS matched anything) -- run standalone via
-# driver.execute_script for dismiss_ads() below.
+# none of AD_CLOSE_SELECTORS/AD_MODAL_MARKER_SELECTORS matched anything) --
+# run standalone via driver.execute_script for dismiss_ads() below.
 _DISMISS_ONCE_JS = f"""
+    {_CLOSE_MARKED_MODALS_JS}
     return (function() {{
         var selectors = {_SELECTORS_JSON};
         var closed = 0;
@@ -66,7 +133,7 @@ _DISMISS_ONCE_JS = f"""
                 try {{ els[j].click(); closed++; }} catch (e) {{}}
             }}
         }}
-        return closed;
+        return closed + tvBotCloseMarkedModals();
     }})();
 """
 
@@ -84,6 +151,7 @@ _DISMISS_ONCE_JS = f"""
 WATCHDOG_SCRIPT = f"""
     (function() {{
         var selectors = {_SELECTORS_JSON};
+        {_CLOSE_MARKED_MODALS_JS}
         function tryDismiss() {{
             for (var i = 0; i < selectors.length; i++) {{
                 var els = document.querySelectorAll(selectors[i]);
@@ -91,6 +159,7 @@ WATCHDOG_SCRIPT = f"""
                     try {{ els[j].click(); }} catch (e) {{}}
                 }}
             }}
+            tvBotCloseMarkedModals();
         }}
         var pending = false;
         function scheduleDismiss() {{
